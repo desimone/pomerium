@@ -49,16 +49,16 @@ func NewGRPC(opts *Options) (p Authenticator, err error) {
 		if opts.CA != "" {
 			ca, err = base64.StdEncoding.DecodeString(opts.CA)
 			if err != nil {
-				return nil, fmt.Errorf("failed to decode certificate authority: %v", err)
+				return nil, fmt.Errorf("proxy/authenticator: failed to decode certificate authority: %v", err)
 			}
 		} else {
 			ca, err = ioutil.ReadFile(opts.CAFile)
 			if err != nil {
-				return nil, fmt.Errorf("certificate authority file %v not readable: %v", opts.CAFile, err)
+				return nil, fmt.Errorf("proxy/authenticator: certificate authority file %v not readable: %v", opts.CAFile, err)
 			}
 		}
 		if ok := cp.AppendCertsFromPEM(ca); !ok {
-			return nil, fmt.Errorf("failed to append CA cert to certPool")
+			return nil, fmt.Errorf("proxy/authenticator: failed to append certificate authority cert to certPool")
 		}
 	} else {
 		newCp, err := x509.SystemCertPool()
