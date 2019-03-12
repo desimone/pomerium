@@ -2,7 +2,7 @@
 module.exports = {
 	title: "Pomerium",
 	description: "An open source identity-aware access proxy.",
-
+	ga: "UA-129872447-2",
 	themeConfig: {
 		repo: "pomerium/pomerium",
 		editLinks: true,
@@ -33,7 +33,7 @@ function docsSidebar(title) {
 		{
 			title,
 			collapsable: false,
-			children: ["", "identity-providers", "signed-headers", "examples","config-reference"]
+			children: ["", "identity-providers", "signed-headers", "examples", "config-reference"]
 		}
 	];
 }
