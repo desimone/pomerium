@@ -296,7 +296,7 @@ func (p *Proxy) UserDashboard(w http.ResponseWriter, r *http.Request) {
 		SignoutURL:       p.GetSignOutURL(p.AuthenticateURL, redirectURL).String(),
 		IsAdmin:          isAdmin,
 		ImpersonateEmail: session.ImpersonateEmail,
-		ImpersonateGroup: strings.Join(session.ImpersonateGroups[:], ","),
+		ImpersonateGroup: strings.Join(session.ImpersonateGroups, ","),
 		CSRF:             csrf.SessionID,
 	}
 	templates.New().ExecuteTemplate(w, "dashboard.html", t)
@@ -496,8 +496,4 @@ func (p *Proxy) GetSignOutURL(authenticateURL, redirectURL *url.URL) *url.URL {
 	params.Set("sig", p.signRedirectURL(rawRedirect, now))
 	a.RawQuery = params.Encode()
 	return a
-}
-
-func extendDeadline(ttl time.Duration) time.Time {
-	return time.Now().Add(ttl).Truncate(time.Second)
 }

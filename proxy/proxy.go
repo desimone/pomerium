@@ -261,12 +261,3 @@ func NewReverseProxyHandler(o *config.Options, proxy *httputil.ReverseProxy, rou
 	timeoutMsg := fmt.Sprintf("%s failed to respond within the %s timeout period", route.Destination.Host, timeout)
 	return http.TimeoutHandler(up, timeout, timeoutMsg), nil
 }
-
-// urlParse wraps url.Parse to add a scheme if none-exists.
-// https://github.com/golang/go/issues/12585
-func urlParse(uri string) (*url.URL, error) {
-	if !strings.Contains(uri, "://") {
-		uri = fmt.Sprintf("https://%s", uri)
-	}
-	return url.ParseRequestURI(uri)
-}

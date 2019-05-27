@@ -60,7 +60,8 @@ func (c *XChaCha20Cipher) GenerateNonce() []byte {
 }
 
 // Encrypt a value using XChaCha20-Poly1305
-func (c *XChaCha20Cipher) Encrypt(plaintext []byte) (joined []byte, err error) {
+func (c *XChaCha20Cipher) Encrypt(plaintext []byte) ([]byte, error) {
+	var err error
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("internal/aead: error encrypting bytes: %v", r)
@@ -71,8 +72,8 @@ func (c *XChaCha20Cipher) Encrypt(plaintext []byte) (joined []byte, err error) {
 	ciphertext := c.aead.Seal(nil, nonce, plaintext, nil)
 
 	// we return the nonce as part of the returned value
-	joined = append(ciphertext[:], nonce[:]...)
-	return joined, nil
+	ciphertext = append(ciphertext, nonce...)
+	return ciphertext, err
 }
 
 // Decrypt a value using XChaCha20-Poly1305

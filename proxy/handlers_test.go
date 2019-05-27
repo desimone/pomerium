@@ -207,24 +207,6 @@ func TestProxy_Handler(t *testing.T) {
 	}
 }
 
-func Test_extendDeadline(t *testing.T) {
-	tests := []struct {
-		name string
-		ttl  time.Duration
-		want time.Time
-	}{
-		{"good", time.Second, time.Now().Add(time.Second).Truncate(time.Second)},
-		{"test nanoseconds truncated", 500 * time.Nanosecond, time.Now().Truncate(time.Second)},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := extendDeadline(tt.ttl); !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("extendDeadline() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestProxy_router(t *testing.T) {
 	testPolicy := policy.Policy{From: "corp.example.com", To: "example.com"}
 	testPolicy.Validate()
@@ -492,4 +474,13 @@ func TestProxy_Impersonate(t *testing.T) {
 			}
 		})
 	}
+}
+
+// urlParse wraps url.Parse to add a scheme if none-exists.
+// https://github.com/golang/go/issues/12585
+func urlParse(uri string) (*url.URL, error) {
+	if !strings.Contains(uri, "://") {
+		uri = fmt.Sprintf("https://%s", uri)
+	}
+	return url.ParseRequestURI(uri)
 }

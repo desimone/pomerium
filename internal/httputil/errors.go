@@ -22,8 +22,7 @@ func (h HTTPError) Error() string {
 
 // CodeForError maps an error type and returns a corresponding http.Status
 func CodeForError(err error) int {
-	switch err {
-	case ErrTokenRevoked:
+	if err == ErrTokenRevoked {
 		return http.StatusUnauthorized
 	}
 	return http.StatusInternalServerError

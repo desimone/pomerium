@@ -1,15 +1,12 @@
-# Setup name variables for the package/tool
 PREFIX?=$(shell pwd)
-
 NAME := pomerium
 PKG := github.com/pomerium/$(NAME)
-
 BUILDDIR := ${PREFIX}/dist
 BINDIR := ${PREFIX}/bin
 GO111MODULE=on
 CGO_ENABLED := 0
-# Set any default go build tags
 BUILDTAGS :=
+GOLANGCI_VERSION = 1.16.0
 
 # Populate version variables
 # Add to compile time flags
@@ -30,7 +27,7 @@ GOOSARCHES = linux/amd64 darwin/amd64 windows/amd64
 
 
 .PHONY: all
-all: clean build fmt lint vet test ## Runs a clean, build, fmt, lint, test, and vet.
+all: clean check build  ## Runs a clean, build, fmt, lint, test, and vet.
 
 .PHONY: tag
 tag: ## Create a new git tag to prepare to build a release
@@ -42,25 +39,25 @@ build: ## Builds dynamic executables and/or packages.
 	@echo "==> $@"
 	@CGO_ENABLED=0 GO111MODULE=on go build -tags "$(BUILDTAGS)" ${GO_LDFLAGS} -o $(BINDIR)/$(NAME) ./cmd/"$(NAME)"
 
-.PHONY: fmt
-fmt: ## Verifies all files have been `gofmt`ed.
-	@echo "==> $@"
-	@gofmt -s -l . | grep -v '.pb.go:' | grep -v vendor | tee /dev/stderr
+.PHONY: check
+check: test lint ## Run tests and linters
+
+bin/golangci-lint: bin/golangci-lint-${GOLANGCI_VERSION}
+	@ln -sf golangci-lint-${GOLANGCI_VERSION} bin/golangci-lint
+bin/golangci-lint-${GOLANGCI_VERSION}:
+	@mkdir -p bin
+	curl -sfL https://install.goreleaser.com/github.com/golangci/golangci-lint.sh | bash -s -- -b ./bin/ v${GOLANGCI_VERSION}
+	@mv bin/golangci-lint $@
 
 .PHONY: lint
-lint: ## Verifies `golint` passes.
+lint: bin/golangci-lint ## Runs `golangci-lint` which includes lint, vet, and many others.
 	@echo "==> $@"
-	@golint ./... | grep -v '.pb.go:' | grep -v vendor | tee /dev/stderr
+	@bin/golangci-lint run ./... --tests=false -E goimports,stylecheck,gocritic,misspell -D errcheck
 
-.PHONY: staticcheck
-staticcheck: ## Verifies `staticcheck` passes
-	@echo "+ $@"
-	@staticcheck $(shell go list ./... | grep -v vendor) | grep -v '.pb.go:' | tee /dev/stderr
-
-.PHONY: vet
-vet: ## Verifies `go vet` passes.
+.PHONY: lint-fussy
+lint-fussy: bin/golangci-lint ## Runs `golangci-lint` but with almost all linters enabled.
 	@echo "==> $@"
-	@go vet $(shell go list ./... | grep -v vendor) | grep -v '.pb.go:' | tee /dev/stderr
+	@bin/golangci-lint run ./... --enable-all --disable=lll
 
 .PHONY: test
 test: ## Runs the go tests.

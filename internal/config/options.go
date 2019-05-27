@@ -136,10 +136,10 @@ func NewOptions() *Options {
 		Services:               "all",
 		CookieHTTPOnly:         true,
 		CookieSecure:           true,
-		CookieExpire:           time.Duration(14) * time.Hour,
-		CookieRefresh:          time.Duration(30) * time.Minute,
+		CookieExpire:           14 * time.Hour,
+		CookieRefresh:          30 * time.Minute,
 		CookieName:             "_pomerium",
-		DefaultUpstreamTimeout: time.Duration(30) * time.Second,
+		DefaultUpstreamTimeout: 30 * time.Second,
 		Headers: map[string]string{
 			"X-Content-Type-Options":    "nosniff",
 			"X-Frame-Options":           "SAMEORIGIN",
@@ -155,7 +155,7 @@ func NewOptions() *Options {
 		IdleTimeout:       5 * time.Minute,
 		AuthenticateURL:   new(url.URL),
 		AuthorizeURL:      new(url.URL),
-		RefreshCooldown:   time.Duration(5 * time.Minute),
+		RefreshCooldown:   5 * time.Minute,
 	}
 	return o
 }
@@ -172,25 +172,25 @@ func OptionsFromViper(configFile string) (*Options, error) {
 		viper.SetConfigFile(configFile)
 		err := viper.ReadInConfig()
 		if err != nil {
-			return nil, fmt.Errorf("Failed to read config: %s", err)
+			return nil, fmt.Errorf("failed to read config: %s", err)
 		}
 	}
 
 	err := viper.Unmarshal(o)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to load options from config: %s", err)
+		return nil, fmt.Errorf("failed to load options from config: %s", err)
 	}
 
 	// Turn URL strings into url structs
 	err = o.parseURLs()
 	if err != nil {
-		return nil, fmt.Errorf("Failed to parse URLs: %s", err)
+		return nil, fmt.Errorf("filed to parse URLs: %s", err)
 	}
 
 	// Load and initialize policy
 	err = o.parsePolicy()
 	if err != nil {
-		return nil, fmt.Errorf("Failed to parse Policy: %s", err)
+		return nil, fmt.Errorf("failed to parse Policy: %s", err)
 	}
 
 	if o.Debug {
@@ -227,7 +227,7 @@ func (o *Options) validate() error {
 	}
 
 	if o.PolicyFile != "" {
-		return errors.New("Setting POLICY_FILE is deprecated, use policy env var or config file instead")
+		return errors.New("setting POLICY_FILE is deprecated, use policy env var or config file instead")
 	}
 
 	return nil
@@ -240,10 +240,10 @@ func (o *Options) parsePolicy() error {
 	if o.PolicyEnv != "" {
 		policyBytes, err := base64.StdEncoding.DecodeString(o.PolicyEnv)
 		if err != nil {
-			return fmt.Errorf("Could not decode POLICY env var: %s", err)
+			return fmt.Errorf("could not decode POLICY env var: %s", err)
 		}
 		if err := yaml.Unmarshal(policyBytes, &policies); err != nil {
-			return fmt.Errorf("Could not parse POLICY env var: %s", err)
+			return fmt.Errorf("could not parse POLICY env var: %s", err)
 		}
 		// Parse from file
 	} else {
