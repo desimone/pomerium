@@ -154,13 +154,17 @@ If set, the HTTP Redirect Address specifies the host and port to redirect http t
 - Environmental Variable: `METRICS_ADDRESS`
 - Config File Key: `metrics_address`
 - Type: `string`
-- Example: `:8080`, `127.0.0.1:9090`, ``
+- Example: `:9090`, `127.0.0.1:9090`
 - Default: `disabled`
 - Optional
 
 Expose a prometheus format HTTP endpoint on the specified port. Disabled by default.
 
-**Use with caution:** the endpoint can expose frontend and backend server names or addresses. Do not expose the metrics port if this is sensitive information.
+:::warning
+
+**Use with caution:** the endpoint can expose frontend and backend server names or addresses. Do not externally expose the metrics if this is sensitive information.
+
+:::
 
 #### Metrics tracked
 
@@ -168,20 +172,52 @@ Name                            | Type      | Description
 :------------------------------ | :-------- | :--------------------------------------------
 http_server_requests_total      | Counter   | Total HTTP server requests handled by service
 http_server_response_size_bytes | Histogram | HTTP server response size by service
-http_server_request_size_bytes | Histogram | HTTP server request size by service
+http_server_request_size_bytes  | Histogram | HTTP server request size by service
 http_server_request_duration_ms | Histogram | HTTP server request duration by service
 http_client_requests_total      | Counter   | Total HTTP client requests made by service
 http_client_response_size_bytes | Histogram | HTTP client response size by service
-http_client_request_size_bytes | Histogram | HTTP client request size by service
+http_client_request_size_bytes  | Histogram | HTTP client request size by service
 http_client_request_duration_ms | Histogram | HTTP client request duration by service
 grpc_client_requests_total      | Counter   | Total GRPC client requests made by service
 grpc_client_response_size_bytes | Histogram | GRPC client response size by service
-grpc_client_request_size_bytes | Histogram | GRPC client request size by service
+grpc_client_request_size_bytes  | Histogram | GRPC client request size by service
 grpc_client_request_duration_ms | Histogram | GRPC client request duration by service
 grpc_server_requests_total      | Counter   | Total GRPC server requests made by service
 grpc_server_response_size_bytes | Histogram | GRPC server response size by service
-grpc_server_request_size_bytes | Histogram | GRPC server request size by service
+grpc_server_request_size_bytes  | Histogram | GRPC server request size by service
 grpc_server_request_duration_ms | Histogram | GRPC server request duration by service
+
+### Tracing
+
+Tracing tracks the progression of a single user request as it is handled by Pomerium.
+
+Each unit work is called a Span in a trace. Spans include metadata about the work, including the time spent in the step (latency), status, time events, attributes, links. You can use tracing to debug errors and latency issues in your applications, including in downstream connections.
+
+#### Shared Tracing Settings
+
+Config Key       | Description                                                       | Required
+:--------------- | :---------------------------------------------------------------- | --------
+tracing_provider | The name of the tracing provider. (e.g. jaeger)                   | ✅
+tracing_debug    | Will disable [sampling](https://opencensus.io/tracing/sampling/). | ❌
+
+#### Jaeger
+
+[Jaeger](https://www.jaegertracing.io/) is a distributed tracing system released as open source by Uber Technologies. It is used for monitoring and troubleshooting microservices-based distributed systems, including:
+
+- Distributed context propagation
+- Distributed transaction monitoring
+- Root cause analysis
+- Service dependency analysis
+- Performance / latency optimization
+
+Config Key                        | Description                                 | Required
+:-------------------------------- | :------------------------------------------ | --------
+tracing_jaeger_collector_endpoint | Url to the Jaeger HTTP Thrift collector.    | ✅
+tracing_jaeger_agent_endpoint     | Send spans to jaeger-agent at this address. | ✅
+
+##### Example
+
+![jaeger example trace](./tracing/jaeger.png)
 
 ### Policy
 
