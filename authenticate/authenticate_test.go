@@ -1,6 +1,7 @@
 package authenticate
 
 import (
+	"net/url"
 	"testing"
 
 	"github.com/pomerium/pomerium/internal/config"
@@ -21,7 +22,7 @@ func newTestOptions(t *testing.T) *config.Options {
 func TestOptions_Validate(t *testing.T) {
 	good := newTestOptions(t)
 	badRedirectURL := newTestOptions(t)
-	badRedirectURL.AuthenticateURL = nil
+	badRedirectURL.AuthenticateURL = url.URL{}
 	emptyClientID := newTestOptions(t)
 	emptyClientID.ClientID = ""
 	emptyClientSecret := newTestOptions(t)
@@ -35,7 +36,7 @@ func TestOptions_Validate(t *testing.T) {
 	badSharedKey := newTestOptions(t)
 	badSharedKey.SharedKey = ""
 	badAuthenticateURL := newTestOptions(t)
-	badAuthenticateURL.AuthenticateURL = nil
+	badAuthenticateURL.AuthenticateURL = url.URL{}
 
 	tests := []struct {
 		name    string
@@ -66,7 +67,7 @@ func TestNew(t *testing.T) {
 	good := newTestOptions(t)
 
 	badRedirectURL := newTestOptions(t)
-	badRedirectURL.AuthenticateURL = nil
+	badRedirectURL.AuthenticateURL = url.URL{}
 
 	tests := []struct {
 		name string

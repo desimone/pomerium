@@ -18,7 +18,7 @@ import (
 // The checks do not modify the internal state of the Option structure. Returns
 // on first error found.
 func ValidateOptions(o config.Options) error {
-	if o.AuthenticateURL == nil {
+	if o.AuthenticateURL.String() == "" {
 		return errors.New("authenticate: 'AUTHENTICATE_SERVICE_URL' missing")
 	}
 	if o.ClientID == "" {
@@ -80,7 +80,7 @@ func New(opts config.Options) (*Authenticate, error) {
 	provider, err := identity.New(
 		opts.Provider,
 		&identity.Provider{
-			RedirectURL:    redirectURL,
+			RedirectURL:    &redirectURL,
 			ProviderName:   opts.Provider,
 			ProviderURL:    opts.ProviderURL,
 			ClientID:       opts.ClientID,
@@ -97,7 +97,7 @@ func New(opts config.Options) (*Authenticate, error) {
 	}
 	return &Authenticate{
 		SharedKey:    opts.SharedKey,
-		RedirectURL:  redirectURL,
+		RedirectURL:  &redirectURL,
 		templates:    templates.New(),
 		csrfStore:    cookieStore,
 		sessionStore: cookieStore,
