@@ -56,7 +56,7 @@ func NewServer(opt *ServerOptions, registrationFn func(s *grpc.Server), wg *sync
 // ServerOptions contains the configurations settings for a gRPC server.
 type ServerOptions struct {
 	// Addr specifies the host and port on which the server should serve
-	// gRPC requests. If empty, ":443" is used.
+	// gRPC requests. If empty, ":5001" is used.
 	Addr string
 
 	// SharedKey is the shared secret authorization key used to mutually authenticate
@@ -73,7 +73,7 @@ type ServerOptions struct {
 }
 
 var defaultServerOptions = &ServerOptions{
-	Addr: ":443",
+	Addr: ":5001",
 }
 
 func (o *ServerOptions) applyServerDefaults() {

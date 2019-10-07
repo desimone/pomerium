@@ -168,17 +168,16 @@ These settings control upstream connections to the Authorize service.
 - Environmental Variable: `GRPC_ADDRESS`
 - Config File Key: `grpc_address`
 - Type: `string`
-- Example: `:443`, `:8443`
-- Default: `:443` or `:5443` if in all-in-one mode
+- Example: `:5001`, `:9999`
+- Default: `:5001`
 
-Address specifies the host and port to serve GRPC requests from. Defaults to `:443` (or `:5443` in all in one mode).
+Address specifies the host and port to serve GRPC requests from.
 
 ### GRPC Insecure
 
 - Environmental Variable: `GRPC_INSECURE`
 - Config File Key: `grpc_insecure`
 - Type: `bool`
-- Default: `:443` (or `:5443` if in all-in-one mode)
 
 If set, GRPC Insecure disables transport security for communication between the proxy and authorize components. If running in all-in-one mode, defaults to true as communication will run over localhost's own socket.
 

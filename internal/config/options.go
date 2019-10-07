@@ -150,7 +150,7 @@ type Options struct {
 	// GRPC Service Settings
 
 	// GRPCAddr specifies the host and port on which the server should serve
-	// gRPC requests. If running in all-in-one mode, ":5443" (localhost:5443) is used.
+	// gRPC requests.
 	GRPCAddr string `mapstructure:"grpc_address"`
 
 	// GRPCInsecure disables transport security.
@@ -197,7 +197,7 @@ var defaultOptions = Options{
 	WriteTimeout:            0, // support streaming by default
 	IdleTimeout:             5 * time.Minute,
 	RefreshCooldown:         5 * time.Minute,
-	GRPCAddr:                ":443",
+	GRPCAddr:                ":5001",
 	GRPCClientTimeout:       10 * time.Second, // Try to withstand transient service failures for a single request
 	GRPCClientDNSRoundRobin: true,
 }
@@ -388,13 +388,10 @@ func (o *Options) Validate() error {
 		}
 		// in all in one mode we are running just over the local socket
 		o.GRPCInsecure = true
-		// to avoid port collision when running on localhost
-		if o.GRPCAddr == defaultOptions.GRPCAddr {
-			o.GRPCAddr = ":5443"
-		}
+
 		// and we can set the corresponding client
 		if o.AuthorizeURLString == "" {
-			o.AuthorizeURLString = "https://localhost:5443"
+			o.AuthorizeURLString = fmt.Sprintf("https://localhost%s", defaultOptions.GRPCAddr)
 		}
 	}
 

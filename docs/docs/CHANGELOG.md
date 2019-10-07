@@ -30,6 +30,7 @@
 - Options code refactored to eliminate global Viper state. [GH-332]
 - Pomerium will no longer default to looking for certificates in the root directory. [GH-328]
 - Pomerium will validate that either `insecure_server`, or a valid certificate bundle is set. [GH-328]
+- Authorize service will no longer default to serving on port `:443` (though the HTTP server will still default to healthchecks there). The new default authorize port is `:5001`. [GH-354]
 
 ### Removed
 
@@ -290,3 +291,4 @@
 [gh-328]: https://github.com/pomerium/pomerium/issues/328
 [gh-332]: https://github.com/pomerium/pomerium/pull/332/
 [gh-338]: https://github.com/pomerium/pomerium/issues/338
+[gh-354]: https://github.com/pomerium/pomerium/issues/354
