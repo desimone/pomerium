@@ -16,5 +16,4 @@ func HealthCheck(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		w.Write([]byte(http.StatusText(http.StatusOK)))
 	}
-	return
 }
