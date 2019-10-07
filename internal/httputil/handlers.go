@@ -4,6 +4,8 @@ import (
 	"net/http"
 )
 
+// HealthCheck is a simple healthcheck handler that responds to GET and HEAD
+// http requests.
 func HealthCheck(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
