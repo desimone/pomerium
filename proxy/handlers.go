@@ -1,16 +1,18 @@
 package proxy // import "github.com/pomerium/pomerium/proxy"
 
 import (
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/pomerium/csrf"
 
+	"github.com/pomerium/pomerium/internal/cryptutil"
 	"github.com/pomerium/pomerium/internal/httputil"
+	"github.com/pomerium/pomerium/internal/middleware"
 	"github.com/pomerium/pomerium/internal/sessions"
 	"github.com/pomerium/pomerium/internal/templates"
 	"github.com/pomerium/pomerium/internal/urlutil"
@@ -20,6 +22,12 @@ import (
 func (p *Proxy) registerDashboardHandlers(r *mux.Router) *mux.Router {
 	// dashboard subrouter
 	h := r.PathPrefix(dashboardURL).Subrouter()
+
+	c := r.PathPrefix(dashboardURL + "/callback").Subrouter()
+	// verify that the caller of our callback url is trust
+	c.Use(middleware.ValidateSignature(p.SharedKey))
+	c.HandleFunc("/", p.Callback).Methods(http.MethodGet)
+
 	// 1. Retrieve the user session and add it to the request context
 	h.Use(sessions.RetrieveSession(p.sessionStore))
 	// 2. AuthN - Verify the user is authenticated. Set email, group, & id headers
@@ -27,15 +35,13 @@ func (p *Proxy) registerDashboardHandlers(r *mux.Router) *mux.Router {
 	// 3. Enforce CSRF protections for any non-idempotent http method
 	h.Use(csrf.Protect(
 		p.cookieSecret,
-		csrf.Path("/"),
-		csrf.Domain(p.cookieDomain),
-		csrf.CookieName(fmt.Sprintf("%s_csrf", p.cookieName)),
+		csrf.Secure(p.cookieOptions.Secure),
+		csrf.CookieName(fmt.Sprintf("%s_csrf", p.cookieOptions.Name)),
 		csrf.ErrorHandler(http.HandlerFunc(httputil.CSRFFailureHandler)),
 	))
 	h.HandleFunc("/", p.UserDashboard).Methods(http.MethodGet)
 	h.HandleFunc("/impersonate", p.Impersonate).Methods(http.MethodPost)
 	h.HandleFunc("/sign_out", p.SignOut).Methods(http.MethodGet, http.MethodPost)
-	h.HandleFunc("/refresh", p.ForceRefresh).Methods(http.MethodPost)
 	return r
 }
 
@@ -56,6 +62,8 @@ func (p *Proxy) SignOut(w http.ResponseWriter, r *http.Request) {
 		redirectURL = uri
 	}
 	uri := urlutil.SignedRedirectURL(p.SharedKey, p.authenticateSignoutURL, redirectURL)
+	// clear our route-scoped session
+	p.sessionStore.ClearSession(w, r)
 	http.Redirect(w, r, uri.String(), http.StatusFound)
 }
 
@@ -74,51 +82,12 @@ func (p *Proxy) UserDashboard(w http.ResponseWriter, r *http.Request) {
 		httputil.ErrorResponse(w, r, err)
 		return
 	}
-	//todo(bdd): make sign out redirect a configuration option so that
-	// 			admins can set to whatever their corporate homepage is
-	redirectURL := &url.URL{Scheme: "https", Host: r.Host, Path: "/"}
-	signoutURL := urlutil.SignedRedirectURL(p.SharedKey, p.authenticateSignoutURL, redirectURL)
+
 	templates.New().ExecuteTemplate(w, "dashboard.html", map[string]interface{}{
-		"Email":            session.Email,
-		"User":             session.User,
-		"Groups":           session.Groups,
-		"RefreshDeadline":  time.Until(session.RefreshDeadline).Round(time.Second).String(),
-		"SignoutURL":       signoutURL.String(),
-		"IsAdmin":          isAdmin,
-		"ImpersonateEmail": session.ImpersonateEmail,
-		"ImpersonateGroup": strings.Join(session.ImpersonateGroups, ","),
-		"csrfField":        csrf.TemplateField(r),
+		"Session":   session,
+		"IsAdmin":   isAdmin,
+		"csrfField": csrf.TemplateField(r),
 	})
-}
-
-// ForceRefresh redeems and extends an existing authenticated oidc session with
-// the underlying identity provider. All session details including groups,
-// timeouts, will be renewed.
-func (p *Proxy) ForceRefresh(w http.ResponseWriter, r *http.Request) {
-	session, err := sessions.FromContext(r.Context())
-	if err != nil {
-		httputil.ErrorResponse(w, r, err)
-		return
-	}
-	iss, err := session.IssuedAt()
-	if err != nil {
-		httputil.ErrorResponse(w, r, err)
-		return
-	}
-
-	// reject a refresh if it's been less than the refresh cooldown to prevent abuse
-	if time.Since(iss) < p.refreshCooldown {
-		errStr := fmt.Sprintf("Session must be %s old before refreshing", p.refreshCooldown)
-		httpErr := httputil.Error(errStr, http.StatusBadRequest, nil)
-		httputil.ErrorResponse(w, r, httpErr)
-		return
-	}
-	session.ForceRefresh()
-	if err = p.sessionStore.SaveSession(w, r, session); err != nil {
-		httputil.ErrorResponse(w, r, err)
-		return
-	}
-	http.Redirect(w, r, dashboardURL, http.StatusFound)
 }
 
 // Impersonate takes the result of a form and adds user impersonation details
@@ -148,7 +117,6 @@ func (p *Proxy) Impersonate(w http.ResponseWriter, r *http.Request) {
 		httputil.ErrorResponse(w, r, err)
 		return
 	}
-
 	http.Redirect(w, r, dashboardURL, http.StatusFound)
 }
 
@@ -193,7 +161,6 @@ func (p *Proxy) VerifyAndSignin(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(http.StatusOK)
-
 }
 
 // VerifyOnly checks a user's credentials for an arbitrary host. If the user
@@ -235,4 +202,33 @@ func (p *Proxy) authorize(r *http.Request, uri *url.URL) error {
 		return fmt.Errorf("%s is not authorized for %s", s.RequestEmail(), uri.String())
 	}
 	return nil
+}
+
+func (p *Proxy) Callback(w http.ResponseWriter, r *http.Request) {
+	redirectURL, err := urlutil.ParseAndValidateURL(r.FormValue("redirect_uri"))
+	if err != nil {
+		httputil.ErrorResponse(w, r, httputil.Error("malformed redirect_uri", http.StatusBadRequest, err))
+		return
+	}
+	encryptedJWT, err := base64.URLEncoding.DecodeString(redirectURL.Query().Get("jwt"))
+	if err != nil {
+		httputil.ErrorResponse(w, r, httputil.Error("", http.StatusBadRequest, err))
+		return
+	}
+	rawJWT, err := cryptutil.Decrypt(p.sharedCipher, encryptedJWT, nil)
+	if err != nil {
+		httputil.ErrorResponse(w, r, httputil.Error("", http.StatusBadRequest, err))
+		return
+	}
+
+	if err = p.sessionStore.SaveSession(w, r, rawJWT); err != nil {
+		httputil.ErrorResponse(w, r, err)
+		return
+	}
+	// cleanup encrypted jwt token and redirect
+	q := redirectURL.Query()
+	q.Del("jwt")
+	redirectURL.RawQuery = q.Encode()
+
+	http.Redirect(w, r, redirectURL.String(), http.StatusFound)
 }

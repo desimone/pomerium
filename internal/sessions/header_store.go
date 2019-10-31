@@ -3,8 +3,6 @@ package sessions // import "github.com/pomerium/pomerium/internal/sessions"
 import (
 	"net/http"
 	"strings"
-
-	"github.com/pomerium/pomerium/internal/cryptutil"
 )
 
 const (
@@ -20,12 +18,12 @@ const (
 type HeaderStore struct {
 	authHeader string
 	authType   string
-	encoder    cryptutil.SecureEncoder
+	encoder    Unmarshaler
 }
 
 // NewHeaderStore returns a new header store for loading sessions from
 // authorization headers.
-func NewHeaderStore(enc cryptutil.SecureEncoder) *HeaderStore {
+func NewHeaderStore(enc Unmarshaler) *HeaderStore {
 	return &HeaderStore{
 		authHeader: defaultAuthHeader,
 		authType:   defaultAuthType,
@@ -42,11 +40,11 @@ func (as *HeaderStore) LoadSession(r *http.Request) (*State, error) {
 	if cipherText == "" {
 		return nil, ErrNoSessionFound
 	}
-	session, err := UnmarshalSession(cipherText, as.encoder)
-	if err != nil {
+	var session State
+	if err := as.encoder.Unmarshal([]byte(cipherText), &session); err != nil {
 		return nil, ErrMalformed
 	}
-	return session, nil
+	return &session, nil
 
 }
 

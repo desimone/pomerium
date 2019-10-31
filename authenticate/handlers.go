@@ -2,8 +2,6 @@ package authenticate // import "github.com/pomerium/pomerium/authenticate"
 
 import (
 	"encoding/base64"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -14,7 +12,6 @@ import (
 
 	"github.com/pomerium/pomerium/internal/cryptutil"
 	"github.com/pomerium/pomerium/internal/httputil"
-	"github.com/pomerium/pomerium/internal/log"
 	"github.com/pomerium/pomerium/internal/middleware"
 	"github.com/pomerium/pomerium/internal/sessions"
 	"github.com/pomerium/pomerium/internal/urlutil"
@@ -31,71 +28,37 @@ var CSPHeaders = map[string]string{
 	"Referrer-Policy": "Same-origin",
 }
 
-// Handler returns the authenticate service's HTTP multiplexer, and routes.
+// Handler returns the authenticate service's handler chain.
 func (a *Authenticate) Handler() http.Handler {
 	r := httputil.NewRouter()
 	r.Use(middleware.SetHeaders(CSPHeaders))
 	r.Use(csrf.Protect(
 		a.cookieSecret,
-		csrf.Secure(a.cookieSecure),
+		csrf.Secure(a.cookieOptions.Secure),
 		csrf.Path("/"),
-		csrf.Domain(a.cookieDomain),
 		csrf.UnsafePaths([]string{callbackPath}), // enforce CSRF on "safe" handler
 		csrf.FormValueName("state"),              // rfc6749 section-10.12
-		csrf.CookieName(fmt.Sprintf("%s_csrf", a.cookieName)),
+		csrf.CookieName(fmt.Sprintf("%s_csrf", a.cookieOptions.Name)),
 		csrf.ErrorHandler(http.HandlerFunc(httputil.CSRFFailureHandler)),
 	))
 
 	r.HandleFunc("/robots.txt", a.RobotsTxt).Methods(http.MethodGet)
+
 	// Identity Provider (IdP) endpoints
 	r.HandleFunc("/oauth2/callback", a.OAuthCallback).Methods(http.MethodGet)
-	r.HandleFunc("/api/v1/token", a.ExchangeToken)
+
+	// programmatic access api endpoint
+	r.HandleFunc("/api/v2/token", a.ExchangeToken)
 
 	// Proxy service endpoints
 	v := r.PathPrefix("/.pomerium").Subrouter()
-	v.Use(middleware.ValidateSignature(a.SharedKey))
-	v.Use(middleware.ValidateRedirectURI(a.RedirectURL))
+	v.Use(middleware.ValidateSignature(a.sharedKey))
 	v.Use(sessions.RetrieveSession(a.sessionStore))
 	v.Use(a.VerifySession)
-
 	v.HandleFunc("/sign_in", a.SignIn)
 	v.HandleFunc("/sign_out", a.SignOut)
+
 	return r
-}
-
-// VerifySession is the middleware used to enforce a valid authentication
-// session state is attached to the users's request context.
-func (a *Authenticate) VerifySession(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		state, err := sessions.FromContext(r.Context())
-		if errors.Is(err, sessions.ErrExpired) {
-			if err := a.refresh(w, r, state); err != nil {
-				log.FromRequest(r).Debug().Str("cause", err.Error()).Msg("authenticate: couldn't refresh session")
-				a.sessionStore.ClearSession(w, r)
-				a.redirectToIdentityProvider(w, r)
-				return
-			}
-
-		} else if err != nil {
-			log.FromRequest(r).Err(err).Msg("authenticate: unexpected session state")
-			a.sessionStore.ClearSession(w, r)
-			a.redirectToIdentityProvider(w, r)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
-func (a *Authenticate) refresh(w http.ResponseWriter, r *http.Request, s *sessions.State) error {
-	newSession, err := a.provider.Refresh(r.Context(), s)
-	if err != nil {
-		return fmt.Errorf("authenticate: refresh failed: %w", err)
-	}
-	if err := a.sessionStore.SaveSession(w, r, newSession); err != nil {
-		return fmt.Errorf("authenticate: refresh save failed: %w", err)
-	}
-	return nil
-
 }
 
 // RobotsTxt handles the /robots.txt route.
@@ -116,11 +79,45 @@ func (a *Authenticate) SignIn(w http.ResponseWriter, r *http.Request) {
 	// Add query param to let downstream apps (or auth endpoints) know
 	// this request followed authentication. Useful for auth-forward-endpoint
 	// redirecting
+	// todo(bdd): downstream should not know or care about it being a callback
+	// q := redirectURL.Query()
+	// q.Add("pomerium-auth-callback", "true")
+	// q.Set("jwt", r.FormValue("jwt"))
+	// redirectURL.RawQuery = q.Encode()
+	state, err := sessions.FromContext(r.Context())
+	if err != nil {
+		httputil.ErrorResponse(w, r, httputil.Error("", http.StatusBadRequest, err))
+		return
+	}
+
+	// todo(bdd): make default route JWT validity time configurable
+	s := state.RouteState(a.RedirectURL.Host, redirectURL.Host, 10*time.Minute)
+
+	signedJWT, err := a.sharedEncoder.Marshal(s)
+	if err != nil {
+		httputil.ErrorResponse(w, r, httputil.Error("", http.StatusBadRequest, err))
+		return
+	}
+	// encrypt our route-based token JWT avoiding any accidental logging
+	encryptedJWT := cryptutil.Encrypt(a.sharedCipher, signedJWT, nil)
+	// base64 our encrypted payload for URL-friendlyness
+	encodedJWT := base64.URLEncoding.EncodeToString(encryptedJWT)
+
+	// add our encoded and encrypted route-session JWT to a query param
 	q := redirectURL.Query()
-	q.Add("pomerium-auth-callback", "true")
+	q.Add("jwt", encodedJWT)
 	redirectURL.RawQuery = q.Encode()
 
-	http.Redirect(w, r, redirectURL.String(), http.StatusFound)
+	// build our hmac-d redirect URL with our session, pointing back to the
+	// proxy's callback URL which is responsible for setting our new route-session
+	uri := urlutil.SignedRedirectURL(a.sharedKey,
+		&url.URL{
+			Scheme: redirectURL.Scheme,
+			Host:   redirectURL.Host,
+			Path:   "/.pomerium/callback",
+		},
+		redirectURL)
+	http.Redirect(w, r, uri.String(), http.StatusFound)
 }
 
 // SignOut signs the user out and attempts to revoke the user's identity session
@@ -132,7 +129,7 @@ func (a *Authenticate) SignOut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.sessionStore.ClearSession(w, r)
-	err = a.provider.Revoke(session.AccessToken)
+	err = a.provider.Revoke(r.Context(), session.AccessToken)
 	if err != nil {
 		httputil.ErrorResponse(w, r, httputil.Error("could not revoke user session", http.StatusBadRequest, err))
 		return
@@ -156,7 +153,7 @@ func (a *Authenticate) redirectToIdentityProvider(w http.ResponseWriter, r *http
 	nonce := csrf.Token(r)
 	now := time.Now().Unix()
 	b := []byte(fmt.Sprintf("%s|%d|", nonce, now))
-	enc := cryptutil.Encrypt(a.cipher, []byte(redirectURL.String()), b)
+	enc := cryptutil.Encrypt(a.cookieCipher, []byte(redirectURL.String()), b)
 	b = append(b, enc...)
 	encodedState := base64.URLEncoding.EncodeToString(b)
 	http.Redirect(w, r, a.provider.GetSignInURL(encodedState), http.StatusFound)
@@ -201,7 +198,7 @@ func (a *Authenticate) getOAuthCallback(w http.ResponseWriter, r *http.Request) 
 		return nil, httputil.Error("malformed state", http.StatusBadRequest, err)
 	}
 
-	// split state into its it's components, e.g.
+	// split state into concat'd components
 	// (nonce|timestamp|redirect_url|encrypted_data(redirect_url)+mac(nonce,ts))
 	statePayload := strings.SplitN(string(bytes), "|", 3)
 	if len(statePayload) != 3 {
@@ -209,16 +206,16 @@ func (a *Authenticate) getOAuthCallback(w http.ResponseWriter, r *http.Request) 
 			fmt.Errorf("state malformed, size: %d", len(statePayload)))
 	}
 
-	// verify that the returned timestamp is valid (replay attack)
+	// verify that the returned timestamp is valid
 	if err := cryptutil.ValidTimestamp(statePayload[1]); err != nil {
 		return nil, httputil.Error(err.Error(), http.StatusBadRequest, err)
 	}
 
-	// Use our AEAD construct to enforce secrecy and authenticity,:
+	// Use our AEAD construct to enforce secrecy and authenticity:
 	// mac: to validate the nonce again, and above timestamp
-	// decrypt: to prevent leaking 'redirect_uri' to IdP or logs)
+	// decrypt: to prevent leaking 'redirect_uri' to IdP or logs
 	b := []byte(fmt.Sprint(statePayload[0], "|", statePayload[1], "|"))
-	redirectString, err := cryptutil.Decrypt(a.cipher, []byte(statePayload[2]), b)
+	redirectString, err := cryptutil.Decrypt(a.cookieCipher, []byte(statePayload[2]), b)
 	if err != nil {
 		return nil, httputil.Error("'state' has invalid hmac", http.StatusBadRequest, err)
 	}
@@ -238,35 +235,30 @@ func (a *Authenticate) getOAuthCallback(w http.ResponseWriter, r *http.Request) 
 // ExchangeToken takes an identity provider issued JWT as input ('id_token)
 // and exchanges that token for a pomerium session. The provided token's
 // audience ('aud') attribute must match Pomerium's client_id.
+//
+// TODO(BDD): update for new route-based methodology
 func (a *Authenticate) ExchangeToken(w http.ResponseWriter, r *http.Request) {
 	code := r.FormValue("id_token")
 	if code == "" {
 		httputil.ErrorResponse(w, r, httputil.Error("missing id token", http.StatusBadRequest, nil))
 		return
 	}
-	session, err := a.provider.IDTokenToSession(r.Context(), code)
+	session, err := a.provider.Authenticate(r.Context(), code)
 	if err != nil {
 		httputil.ErrorResponse(w, r, err)
 		return
 	}
-	encToken, err := sessions.MarshalSession(session, a.encoder)
+	authSignedJWT := session.RouteState(
+		a.RedirectURL.Host,
+		"service-account",                      // todo(bdd): policy to opt-in to service-account based access
+		time.Until(session.AccessToken.Expiry), // valid for the duration of the access token itself
+	)
+
+	encodedJWT, err := a.sharedEncoder.Marshal(authSignedJWT)
 	if err != nil {
 		httputil.ErrorResponse(w, r, httputil.Error(err.Error(), http.StatusBadRequest, err))
 		return
 	}
-	restSession := struct {
-		Token  string
-		Expiry time.Time `json:",omitempty"`
-	}{
-		Token:  encToken,
-		Expiry: session.RefreshDeadline,
-	}
-
-	jsonBytes, err := json.Marshal(restSession)
-	if err != nil {
-		httputil.ErrorResponse(w, r, err)
-		return
-	}
 	w.Header().Set("Content-Type", "application/json")
-	w.Write(jsonBytes)
+	w.Write(encodedJWT)
 }

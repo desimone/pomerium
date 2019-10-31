@@ -7,6 +7,11 @@ import (
 	"time"
 )
 
+const (
+	// DefaultLeeway defines the default leeway for matching NotBefore/Expiry claims.
+	DefaultLeeway = 5.0 * time.Minute
+)
+
 var (
 	errTimestampMalformed = errors.New("internal/cryptutil: timestamp malformed")
 	errTimestampExpired   = errors.New("internal/cryptutil: timestamp expired")

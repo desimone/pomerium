@@ -35,34 +35,23 @@ func retrieve(s ...SessionLoader) func(http.Handler) http.Handler {
 }
 
 func retrieveFromRequest(r *http.Request, sessions ...SessionLoader) (*State, error) {
-	state := new(State)
-	var err error
-
 	// Extract sessions state from the request by calling token find functions in
 	// the order they where provided. Further extraction stops if a function
 	// returns a non-empty string.
 	for _, s := range sessions {
-		state, err = s.LoadSession(r)
+		state, err := s.LoadSession(r)
+		// if we can't load (usually a hash mismatch issue)
 		if err != nil && !errors.Is(err, ErrNoSessionFound) {
-			//  unexpected error
-			return nil, err
+			return state, err
 		}
-		// break, we found a session state
+		// we've got a loaded state, return it and any validation error
 		if state != nil {
-			break
+			err = state.Verify(r.Host)
+			return state, err
 		}
 	}
-	// no session found if state is still empty
-	if state == nil {
-		return nil, ErrNoSessionFound
-	}
 
-	if err = state.Valid(); err != nil {
-		// a little unusual but we want to return the expired state too
-		return state, err
-	}
-
-	return state, nil
+	return nil, ErrNoSessionFound
 }
 
 // NewContext sets context values for the user session state and error.

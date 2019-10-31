@@ -3,9 +3,8 @@ package proxy // import "github.com/pomerium/pomerium/proxy"
 import (
 	"fmt"
 	"net/http"
-	"strings"
+	"time"
 
-	"github.com/pomerium/pomerium/internal/cryptutil"
 	"github.com/pomerium/pomerium/internal/httputil"
 	"github.com/pomerium/pomerium/internal/log"
 	"github.com/pomerium/pomerium/internal/sessions"
@@ -46,18 +45,15 @@ func (p *Proxy) authenticate(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	if s == nil {
-		return fmt.Errorf("empty session state")
-	}
-	if err := s.Valid(); err != nil {
+	if err := s.Verify(r.Host); err != nil {
 		return err
 	}
 	// add pomerium's headers to the downstream request
-	r.Header.Set(HeaderUserID, s.User)
+	r.Header.Set(HeaderUserID, s.Subject)
 	r.Header.Set(HeaderEmail, s.RequestEmail())
 	r.Header.Set(HeaderGroups, s.RequestGroups())
 	// and upstream
-	w.Header().Set(HeaderUserID, s.User)
+	w.Header().Set(HeaderUserID, s.Subject)
 	w.Header().Set(HeaderEmail, s.RequestEmail())
 	w.Header().Set(HeaderGroups, s.RequestGroups())
 	return nil
@@ -89,7 +85,7 @@ func (p *Proxy) AuthorizeSession(next http.Handler) http.Handler {
 
 // SignRequest is middleware that signs a JWT that contains a user's id,
 // email, and group. Session state is retrieved from the users's request context
-func (p *Proxy) SignRequest(signer cryptutil.JWTSigner) func(next http.Handler) http.Handler {
+func (p *Proxy) SignRequest(signer sessions.Marshaler) func(next http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx, span := trace.StartSpan(r.Context(), "proxy.SignRequest")
@@ -99,12 +95,12 @@ func (p *Proxy) SignRequest(signer cryptutil.JWTSigner) func(next http.Handler) 
 				httputil.ErrorResponse(w, r.WithContext(ctx), httputil.Error("", http.StatusForbidden, err))
 				return
 			}
-			jwt, err := signer.SignJWT(s.User, s.Email, strings.Join(s.Groups, ","))
+			jwt, err := signer.Marshal(s.RouteState(s.Issuer, r.Host, time.Minute))
 			if err != nil {
-				log.FromRequest(r).Warn().Err(err).Msg("proxy: failed signing jwt")
+				log.FromRequest(r).Error().Err(err).Msg("proxy: failed signing jwt")
 			} else {
-				r.Header.Set(HeaderJWT, jwt)
-				w.Header().Set(HeaderJWT, jwt)
+				r.Header.Set(HeaderJWT, string(jwt))
+				w.Header().Set(HeaderJWT, string(jwt))
 			}
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})

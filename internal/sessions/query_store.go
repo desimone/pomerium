@@ -2,8 +2,6 @@ package sessions // import "github.com/pomerium/pomerium/internal/sessions"
 
 import (
 	"net/http"
-
-	"github.com/pomerium/pomerium/internal/cryptutil"
 )
 
 const (
@@ -14,12 +12,12 @@ const (
 // query strings / query parameters.
 type QueryParamStore struct {
 	queryParamKey string
-	encoder       cryptutil.SecureEncoder
+	encoder       Unmarshaler
 }
 
 // NewQueryParamStore returns a new query param store for loading sessions from
 // query strings / query parameters.
-func NewQueryParamStore(enc cryptutil.SecureEncoder) *QueryParamStore {
+func NewQueryParamStore(enc Encoder) *QueryParamStore {
 	return &QueryParamStore{
 		queryParamKey: defaultQueryParamKey,
 		encoder:       enc,
@@ -35,10 +33,9 @@ func (qp *QueryParamStore) LoadSession(r *http.Request) (*State, error) {
 	if cipherText == "" {
 		return nil, ErrNoSessionFound
 	}
-	session, err := UnmarshalSession(cipherText, qp.encoder)
-	if err != nil {
+	var session State
+	if err := qp.encoder.Unmarshal([]byte(cipherText), &session); err != nil {
 		return nil, ErrMalformed
 	}
-	return session, nil
-
+	return &session, nil
 }
