@@ -19,13 +19,7 @@ categories:
 exclude-labels:
   - no-changelog
 
-change-template: "- $TITLE @$AUTHOR (#$NUMBER)"
 template: |
-
-  <!-- Optional: add a release summary here -->
   ## Changes
-  $CHANGES
 
-replacers:
-  - search: '/CVE-(\d{4})-(\d+)/g'
-    replace: "https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-$1-$2"
+  $CHANGES
