@@ -1,4 +1,7 @@
-package identity
+// Package azure implements OpenID Connect for Microsoft Azure
+//
+// https://www.pomerium.io/docs/identity-providers/azure.html
+package azure
 
 import (
 	"context"
@@ -7,63 +10,49 @@ import (
 	"net/http"
 	"time"
 
-	oidc "github.com/coreos/go-oidc"
 	"golang.org/x/oauth2"
 
 	"github.com/pomerium/pomerium/internal/httputil"
+	"github.com/pomerium/pomerium/internal/identity"
+	pom_oidc "github.com/pomerium/pomerium/internal/identity/oidc"
 	"github.com/pomerium/pomerium/internal/log"
 	"github.com/pomerium/pomerium/internal/sessions"
 	"github.com/pomerium/pomerium/internal/version"
 )
 
+// Name identifies the Azure identity provider
+const Name = "azure"
+
 // defaultAzureProviderURL Users with both a personal Microsoft
 // account and a work or school account from Azure Active Directory (Azure AD)
 // an sign in to the application.
-const defaultAzureProviderURL = "https://login.microsoftonline.com/common"
+const defaultProviderURL = "https://login.microsoftonline.com/common"
 const defaultAzureGroupURL = "https://graph.microsoft.com/v1.0/me/memberOf"
 
-// AzureProvider is an implementation of the Provider interface
+// AzureProvider is an Azure implementation of the Authenticator interface.
 type AzureProvider struct {
-	*Provider
+	*pom_oidc.OpenIDProvider
 }
 
-// NewAzureProvider returns a new AzureProvider and sets the provider url endpoints.
-// https://www.pomerium.io/docs/identity-providers.html#azure-active-directory
-func NewAzureProvider(p *Provider) (*AzureProvider, error) {
-	ctx := context.Background()
-	if p.ProviderURL == "" {
-		p.ProviderURL = defaultAzureProviderURL
-	}
+// New instantiates an OpenID Connect (OIDC) provider for Azure.
+func New(ctx context.Context, o *identity.Options) (*AzureProvider, error) {
+	var p AzureProvider
 	var err error
-	p.provider, err = oidc.NewProvider(ctx, p.ProviderURL)
+	if o.ProviderURL == "" {
+		o.ProviderURL = defaultProviderURL
+	}
+	genericOidc, err := pom_oidc.New(ctx, o)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s: failed creating oidc provider: %w", Name, err)
 	}
-	if len(p.Scopes) == 0 {
-		p.Scopes = []string{oidc.ScopeOpenID, "profile", "email", "offline_access", "Group.Read.All"}
-	}
-	p.verifier = p.provider.Verifier(&oidc.Config{ClientID: p.ClientID})
-	p.oauth = &oauth2.Config{
-		ClientID:     p.ClientID,
-		ClientSecret: p.ClientSecret,
-		Endpoint:     p.provider.Endpoint(),
-		RedirectURL:  p.RedirectURL.String(),
-		Scopes:       p.Scopes,
-	}
-
-	azureProvider := &AzureProvider{Provider: p}
-	if err := p.provider.Claims(&azureProvider); err != nil {
-		return nil, err
-	}
-
-	p.UserGroupFn = azureProvider.UserGroups
-
-	return azureProvider, nil
+	p.OpenIDProvider = genericOidc
+	p.UserGroupFn = p.UserGroups
+	return &p, nil
 }
 
 // GetSignInURL returns the sign in url with typical oauth parameters
 func (p *AzureProvider) GetSignInURL(state string) string {
-	return p.oauth.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.SetAuthURLParam("prompt", "select_account"))
+	return p.Oauth.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.SetAuthURLParam("prompt", "select_account"))
 }
 
 // UserGroups returns a slice of group names a given user is in.
@@ -90,7 +79,7 @@ func (p *AzureProvider) UserGroups(ctx context.Context, s *sessions.State) ([]st
 	}
 	var groups []string
 	for _, group := range response.Groups {
-		log.Debug().Str("DisplayName", group.DisplayName).Str("ID", group.ID).Msg("identity/microsoft: group")
+		log.Debug().Str("DisplayName", group.DisplayName).Str("ID", group.ID).Msg("microsoft: group")
 		groups = append(groups, group.ID)
 	}
 	return groups, nil

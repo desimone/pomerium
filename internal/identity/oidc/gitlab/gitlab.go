@@ -1,4 +1,7 @@
-package identity // import "github.com/pomerium/pomerium/internal/identity"
+// Package gitlab implements OpenID Connect for Gitlab
+//
+// https://www.pomerium.io/docs/identity-providers/gitlab.html
+package gitlab
 
 import (
 	"context"
@@ -7,68 +10,60 @@ import (
 	"fmt"
 	"net/http"
 
-	oidc "github.com/coreos/go-oidc"
-	"golang.org/x/oauth2"
-
+	"github.com/coreos/go-oidc"
 	"github.com/pomerium/pomerium/internal/httputil"
+	"github.com/pomerium/pomerium/internal/identity"
+	pom_oidc "github.com/pomerium/pomerium/internal/identity/oidc"
 	"github.com/pomerium/pomerium/internal/log"
 	"github.com/pomerium/pomerium/internal/sessions"
 	"github.com/pomerium/pomerium/internal/version"
 )
 
+// Name identifies the GitLab identity provider
+const Name = "gitlab"
+
+var defaultScopes = []string{oidc.ScopeOpenID, "api", "read_user", "profile", "email"}
+
 const (
-	defaultGitLabProviderURL = "https://gitlab.com"
-	groupPath                = "/api/v4/groups"
+	defaultProviderURL = "https://gitlab.com"
+	groupPath          = "/api/v4/groups"
 )
 
-// GitLabProvider is an implementation of the OAuth Provider
+// GitLabProvider is a Gitlab implementation of the Authenticator interface.
 type GitLabProvider struct {
-	*Provider
+	*pom_oidc.OpenIDProvider
+
+	userGroupURL string
 }
 
-// NewGitLabProvider returns a new GitLabProvider.
-// https://www.pomerium.io/docs/identity-providers/gitlab.html
-func NewGitLabProvider(p *Provider) (*GitLabProvider, error) {
-	ctx := context.Background()
-
-	if p.ProviderURL == "" {
-		p.ProviderURL = defaultGitLabProviderURL
-	}
-
+// New instantiates an OpenID Connect (OIDC) provider for Gitlab.
+func New(ctx context.Context, o *identity.Options) (*GitLabProvider, error) {
+	var p GitLabProvider
 	var err error
-	p.provider, err = oidc.NewProvider(ctx, p.ProviderURL)
+	if o.ProviderURL == "" {
+		o.ProviderURL = defaultProviderURL
+	}
+	if len(o.Scopes) == 0 {
+		o.Scopes = defaultScopes
+	}
+	genericOidc, err := pom_oidc.New(ctx, o)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s: failed creating oidc provider: %w", Name, err)
 	}
+	p.OpenIDProvider = genericOidc
+	p.UserGroupFn = p.UserGroups
+	p.userGroupURL = o.ProviderURL + groupPath
 
-	if len(p.Scopes) == 0 {
-		p.Scopes = []string{oidc.ScopeOpenID, "api", "read_user", "profile", "email"}
-	}
-
-	p.verifier = p.provider.Verifier(&oidc.Config{ClientID: p.ClientID})
-	p.oauth = &oauth2.Config{
-		ClientID:     p.ClientID,
-		ClientSecret: p.ClientSecret,
-		Endpoint:     p.provider.Endpoint(),
-		RedirectURL:  p.RedirectURL.String(),
-		Scopes:       p.Scopes,
-	}
-	gp := &GitLabProvider{Provider: p}
-
-	if err := p.provider.Claims(&gp); err != nil {
-		return nil, err
-	}
-	gp.UserGroupFn = gp.UserGroups
-	return gp, nil
+	return &p, nil
 }
 
 // UserGroups returns a slice of groups for the user.
 //
-// By default, this request returns 20 results at a time because the API results are paginated.
+// Returns 20 results at a time because the API results are paginated.
 // https://docs.gitlab.com/ee/api/groups.html#list-groups
 func (p *GitLabProvider) UserGroups(ctx context.Context, s *sessions.State) ([]string, error) {
 	if s == nil || s.AccessToken == nil {
-		return nil, errors.New("identity/gitlab: user session cannot be empty")
+		return nil, errors.New("gitlab: user session cannot be empty")
 	}
 
 	var response []struct {
@@ -83,16 +78,14 @@ func (p *GitLabProvider) UserGroups(ctx context.Context, s *sessions.State) ([]s
 		FullName                       string      `json:"full_name,omitempty"`
 		FullPath                       string      `json:"full_path,omitempty"`
 	}
-	userGroupURL := p.ProviderURL + groupPath
 	headers := map[string]string{"Authorization": fmt.Sprintf("Bearer %s", s.AccessToken.AccessToken)}
-	err := httputil.Client(ctx, http.MethodGet, userGroupURL, version.UserAgent(), headers, nil, &response)
+	err := httputil.Client(ctx, http.MethodGet, p.userGroupURL, version.UserAgent(), headers, nil, &response)
 	if err != nil {
 		return nil, err
 	}
 
 	var groups []string
-	log.Debug().Interface("response", response).Msg("identity/gitlab: groups")
-
+	log.Debug().Interface("response", response).Msg("gitlab: groups")
 	for _, group := range response {
 		groups = append(groups, group.ID.String())
 	}

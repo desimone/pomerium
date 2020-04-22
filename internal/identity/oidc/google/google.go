@@ -1,4 +1,8 @@
-package identity
+// Package google implements OpenID Connect for Google and GSuite.
+//
+// https://www.pomerium.io/docs/identity-providers/google.html
+// https://developers.google.com/identity/protocols/oauth2/openid-connect
+package google
 
 import (
 	"context"
@@ -11,63 +15,55 @@ import (
 	"golang.org/x/oauth2/google"
 	admin "google.golang.org/api/admin/directory/v1"
 
+	"github.com/pomerium/pomerium/internal/identity"
+	pom_oidc "github.com/pomerium/pomerium/internal/identity/oidc"
 	"github.com/pomerium/pomerium/internal/log"
 	"github.com/pomerium/pomerium/internal/sessions"
 )
 
-const defaultGoogleProviderURL = "https://accounts.google.com"
+// Name identifies the Google identity provider
+const Name = "google"
 
-// GoogleProvider is an implementation of the Provider interface.
+const defaultProviderURL = "https://accounts.google.com"
+
+var defaultScopes = []string{oidc.ScopeOpenID, "profile", "email"}
+
+// GoogleProvider is a Google implementation of the Authenticator interface.
 type GoogleProvider struct {
-	*Provider
+	*pom_oidc.OpenIDProvider
 
+	// todo(bdd): we could probably save on a big ol set of imports
+	// by calling this API directly
 	apiClient *admin.Service
 }
 
-// NewGoogleProvider instantiates an OpenID Connect (OIDC) session with Google.
-func NewGoogleProvider(p *Provider) (*GoogleProvider, error) {
-	ctx := context.Background()
-	if p.ProviderURL == "" {
-		p.ProviderURL = defaultGoogleProviderURL
-	}
+// New instantiates an OpenID Connect (OIDC) session with Google.
+func New(ctx context.Context, o *identity.Options) (*GoogleProvider, error) {
+	var p GoogleProvider
 	var err error
-	p.provider, err = oidc.NewProvider(ctx, p.ProviderURL)
+	if o.ProviderURL == "" {
+		o.ProviderURL = defaultProviderURL
+	}
+	if len(o.Scopes) == 0 {
+		o.Scopes = defaultScopes
+	}
+	genericOidc, err := pom_oidc.New(ctx, o)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s: failed creating oidc provider: %w", Name, err)
 	}
-	// Google rejects the offline scope favoring "access_type=offline"
-	// as part of the authorization request instead.
-	if len(p.Scopes) == 0 {
-		p.Scopes = []string{oidc.ScopeOpenID, "profile", "email"}
-	}
-	p.verifier = p.provider.Verifier(&oidc.Config{ClientID: p.ClientID})
-	p.oauth = &oauth2.Config{
-		ClientID:     p.ClientID,
-		ClientSecret: p.ClientSecret,
-		Endpoint:     p.provider.Endpoint(),
-		RedirectURL:  p.RedirectURL.String(),
-		Scopes:       p.Scopes,
-	}
+	p.OpenIDProvider = genericOidc
 
-	gp := &GoogleProvider{
-		Provider: p,
-	}
-
-	// build api client to make group membership api calls
-	if err := p.provider.Claims(&gp); err != nil {
-		return nil, err
-	}
 	// if service account set, configure admin sdk calls
-	if p.ServiceAccount != "" {
-		apiCreds, err := base64.StdEncoding.DecodeString(p.ServiceAccount)
+	if o.ServiceAccount != "" {
+		apiCreds, err := base64.StdEncoding.DecodeString(o.ServiceAccount)
 		if err != nil {
-			return nil, fmt.Errorf("identity/google: could not decode service account json %w", err)
+			return nil, fmt.Errorf("google: could not decode service account json %w", err)
 		}
 		// Required scopes for groups api
 		// https://developers.google.com/admin-sdk/directory/v1/reference/groups/list
 		conf, err := google.JWTConfigFromJSON(apiCreds, admin.AdminDirectoryUserReadonlyScope, admin.AdminDirectoryGroupReadonlyScope)
 		if err != nil {
-			return nil, fmt.Errorf("identity/google: failed making jwt config from json %w", err)
+			return nil, fmt.Errorf("google: failed making jwt config from json %w", err)
 		}
 		var credentialsFile struct {
 			ImpersonateUser string `json:"impersonate_user"`
@@ -77,16 +73,16 @@ func NewGoogleProvider(p *Provider) (*GoogleProvider, error) {
 		}
 		conf.Subject = credentialsFile.ImpersonateUser
 		client := conf.Client(context.TODO())
-		gp.apiClient, err = admin.New(client)
+		p.apiClient, err = admin.New(client)
 		if err != nil {
-			return nil, fmt.Errorf("identity/google: failed creating admin service %w", err)
+			return nil, fmt.Errorf("google: failed creating admin service %w", err)
 		}
-		gp.UserGroupFn = gp.UserGroups
+		p.UserGroupFn = p.UserGroups
 	} else {
-		log.Warn().Msg("identity/google: no service account, cannot retrieve groups")
+		log.Warn().Msg("google: no service account, cannot retrieve groups")
 	}
 
-	return gp, nil
+	return &p, nil
 }
 
 // GetSignInURL returns a URL to OAuth 2.0 provider's consent page that asks for permissions for
@@ -101,7 +97,7 @@ func NewGoogleProvider(p *Provider) (*GoogleProvider, error) {
 // prompt=consent to the OAuth redirect URL and will always return a refresh_token.
 // https://openid.net/specs/openid-connect-core-1_0.html#OfflineAccess
 func (p *GoogleProvider) GetSignInURL(state string) string {
-	return p.oauth.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.SetAuthURLParam("prompt", "select_account consent"))
+	return p.Oauth.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.SetAuthURLParam("prompt", "select_account consent"))
 }
 
 // UserGroups returns a slice of group names a given user is in
@@ -114,7 +110,7 @@ func (p *GoogleProvider) UserGroups(ctx context.Context, s *sessions.State) ([]s
 		req := p.apiClient.Groups.List().UserKey(s.Subject).MaxResults(100)
 		resp, err := req.Do()
 		if err != nil {
-			return nil, fmt.Errorf("identity/google: group api request failed %w", err)
+			return nil, fmt.Errorf("google: group api request failed %w", err)
 		}
 		for _, group := range resp.Groups {
 			groups = append(groups, group.Email)

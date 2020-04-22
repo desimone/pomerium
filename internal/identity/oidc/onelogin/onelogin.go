@@ -1,4 +1,7 @@
-package identity
+// Package onelogin implements OpenID Connect for OneLogin
+//
+// https://www.pomerium.io/docs/identity-providers/one-login.html
+package onelogin
 
 import (
 	"context"
@@ -8,54 +11,46 @@ import (
 	"time"
 
 	oidc "github.com/coreos/go-oidc"
-	"golang.org/x/oauth2"
 
 	"github.com/pomerium/pomerium/internal/httputil"
+	"github.com/pomerium/pomerium/internal/identity"
+	pom_oidc "github.com/pomerium/pomerium/internal/identity/oidc"
 	"github.com/pomerium/pomerium/internal/sessions"
 	"github.com/pomerium/pomerium/internal/version"
 )
 
-const defaultOneLoginProviderURL = "https://openid-connect.onelogin.com/oidc"
-const defaultOneloginGroupURL = "https://openid-connect.onelogin.com/oidc/me"
+const (
+	// Name identifies the OneLogin identity provider
+	Name = "onelogin"
 
-// OneLoginProvider provides a standard, OpenID Connect implementation
-// of an authorization identity provider.
+	defaultProviderURL      = "https://openid-connect.onelogin.com/oidc"
+	defaultOneloginGroupURL = "https://openid-connect.onelogin.com/oidc/me"
+)
+
+var defaultScopes = []string{oidc.ScopeOpenID, "profile", "email", "groups", "offline_access"}
+
+// OneLoginProvider is an OneLogin implementation of the Authenticator interface.
 type OneLoginProvider struct {
-	*Provider
+	*pom_oidc.OpenIDProvider
 }
 
-// NewOneLoginProvider creates a new instance of an OpenID Connect provider.
-func NewOneLoginProvider(p *Provider) (*OneLoginProvider, error) {
-	ctx := context.Background()
-	if p.ProviderURL == "" {
-		p.ProviderURL = defaultOneLoginProviderURL
-	}
+// New instantiates an OpenID Connect (OIDC) provider for OneLogin.
+func New(ctx context.Context, o *identity.Options) (*OneLoginProvider, error) {
+	var p OneLoginProvider
 	var err error
-	p.provider, err = oidc.NewProvider(ctx, p.ProviderURL)
+	if o.ProviderURL == "" {
+		o.ProviderURL = defaultProviderURL
+	}
+	if len(o.Scopes) == 0 {
+		o.Scopes = defaultScopes
+	}
+	genericOidc, err := pom_oidc.New(ctx, o)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s: failed creating oidc provider: %w", Name, err)
 	}
-	if len(p.Scopes) == 0 {
-		p.Scopes = []string{oidc.ScopeOpenID, "profile", "email", "groups", "offline_access"}
-	}
-	p.verifier = p.provider.Verifier(&oidc.Config{ClientID: p.ClientID})
-	p.oauth = &oauth2.Config{
-		ClientID:     p.ClientID,
-		ClientSecret: p.ClientSecret,
-		Endpoint:     p.provider.Endpoint(),
-		RedirectURL:  p.RedirectURL.String(),
-		Scopes:       p.Scopes,
-	}
-
-	olProvider := OneLoginProvider{Provider: p}
-
-	if err := p.provider.Claims(&olProvider); err != nil {
-		return nil, err
-	}
-
-	p.UserGroupFn = olProvider.UserGroups
-
-	return &olProvider, nil
+	p.OpenIDProvider = genericOidc
+	p.UserGroupFn = p.UserGroups
+	return &p, nil
 }
 
 // UserGroups returns a slice of group names a given user is in.

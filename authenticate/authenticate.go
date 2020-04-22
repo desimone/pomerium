@@ -3,6 +3,7 @@
 package authenticate
 
 import (
+	"context"
 	"crypto/cipher"
 	"encoding/base64"
 	"errors"
@@ -19,6 +20,13 @@ import (
 	"github.com/pomerium/pomerium/internal/grpc"
 	"github.com/pomerium/pomerium/internal/grpc/cache/client"
 	"github.com/pomerium/pomerium/internal/identity"
+	"github.com/pomerium/pomerium/internal/identity/oauth2/github"
+	pom_oidc "github.com/pomerium/pomerium/internal/identity/oidc"
+	"github.com/pomerium/pomerium/internal/identity/oidc/azure"
+	"github.com/pomerium/pomerium/internal/identity/oidc/gitlab"
+	"github.com/pomerium/pomerium/internal/identity/oidc/google"
+	"github.com/pomerium/pomerium/internal/identity/oidc/okta"
+	"github.com/pomerium/pomerium/internal/identity/oidc/onelogin"
 	"github.com/pomerium/pomerium/internal/sessions"
 	"github.com/pomerium/pomerium/internal/sessions/cache"
 	"github.com/pomerium/pomerium/internal/sessions/cookie"
@@ -155,17 +163,17 @@ func New(opts config.Options) (*Authenticate, error) {
 	redirectURL, _ := urlutil.DeepCopy(opts.AuthenticateURL)
 	redirectURL.Path = opts.AuthenticateCallbackPath
 	// configure our identity provider
-	provider, err := identity.New(
-		opts.Provider,
-		&identity.Provider{
-			RedirectURL:    redirectURL,
-			ProviderName:   opts.Provider,
-			ProviderURL:    opts.ProviderURL,
-			ClientID:       opts.ClientID,
-			ClientSecret:   opts.ClientSecret,
-			Scopes:         opts.Scopes,
-			ServiceAccount: opts.ServiceAccount,
-		})
+	idpOptions := identity.Options{
+		RedirectURL:    redirectURL,
+		ProviderName:   opts.Provider,
+		ProviderURL:    opts.ProviderURL,
+		ClientID:       opts.ClientID,
+		ClientSecret:   opts.ClientSecret,
+		Scopes:         opts.Scopes,
+		ServiceAccount: opts.ServiceAccount,
+	}
+
+	provider, err := NewIdentityProvider(idpOptions)
 	if err != nil {
 		return nil, err
 	}
@@ -190,4 +198,31 @@ func New(opts config.Options) (*Authenticate, error) {
 
 		templates: template.Must(frontend.NewTemplates()),
 	}, nil
+}
+
+// NewIdentityProvider returns a new identity provider based on its name.
+func NewIdentityProvider(o identity.Options) (a identity.Authenticator, err error) {
+	ctx := context.Background()
+	switch o.ProviderName {
+	case azure.Name:
+		a, err = azure.New(ctx, &o)
+	case gitlab.Name:
+		a, err = gitlab.New(ctx, &o)
+	case github.Name:
+		a, err = github.New(ctx, &o)
+	case google.Name:
+		a, err = google.New(ctx, &o)
+	case pom_oidc.Name:
+		a, err = pom_oidc.New(ctx, &o)
+	case okta.Name:
+		a, err = okta.New(ctx, &o)
+	case onelogin.Name:
+		a, err = onelogin.New(ctx, &o)
+	default:
+		return nil, fmt.Errorf("authenticate: unknown provider: %s", o.ProviderName)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return a, nil
 }
