@@ -496,12 +496,24 @@ func TestAuthenticate_Refresh(t *testing.T) {
 			identity.MockProvider{RefreshResponse: oauth2.Token{Expiry: time.Now().Add(10 * time.Minute)}},
 			mock.Encoder{MarshalResponse: []byte("ok")},
 			200},
-		{"expired",
+		{"session and oauth2 expired",
 			&sessions.State{Email: "user@test.example", Expiry: jwt.NewNumericDate(time.Now().Add(-10 * time.Minute))},
 			&oauth2.Token{AccessToken: "mock", Expiry: time.Now().Add(-10 * time.Minute)},
 			identity.MockProvider{RefreshResponse: oauth2.Token{Expiry: time.Now().Add(10 * time.Minute)}},
 			mock.Encoder{MarshalResponse: []byte("ok")},
 			200},
+		{"session expired",
+			&sessions.State{Email: "user@test.example", Expiry: jwt.NewNumericDate(time.Now().Add(-10 * time.Minute))},
+			&oauth2.Token{AccessToken: "mock", Expiry: time.Now().Add(10 * time.Minute)},
+			identity.MockProvider{RefreshResponse: oauth2.Token{Expiry: time.Now().Add(10 * time.Minute)}},
+			mock.Encoder{MarshalResponse: []byte("ok")},
+			200},
+		{"failed refresh",
+			&sessions.State{Email: "user@test.example", Expiry: jwt.NewNumericDate(time.Now().Add(-10 * time.Minute))},
+			&oauth2.Token{AccessToken: "mock", Expiry: time.Now().Add(10 * time.Minute)},
+			identity.MockProvider{RefreshError: errors.New("oh no")},
+			mock.Encoder{MarshalResponse: []byte("ok")},
+			302},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -552,7 +564,7 @@ func TestAuthenticate_Refresh(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			rawToken, err := a.encryptedEncoder.Marshal(tt.session)
+			rawToken, err := a.encryptedEncoder.Marshal(tt.at)
 			if err != nil {
 				t.Fatal(err)
 			}
