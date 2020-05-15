@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pomerium/pomerium/config"
 	"github.com/pomerium/pomerium/internal/cryptutil"
 	"github.com/pomerium/pomerium/internal/encoding"
 	"github.com/pomerium/pomerium/internal/encoding/jws"
@@ -27,6 +28,7 @@ import (
 
 	"github.com/golang/mock/gomock"
 	"github.com/google/go-cmp/cmp"
+	"github.com/gorilla/mux"
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/oauth2"
 	"gopkg.in/square/go-jose.v2/jwt"
@@ -308,7 +310,6 @@ func TestAuthenticate_OAuthCallback(t *testing.T) {
 			params.Add("error", tt.paramErr)
 			params.Add("code", tt.code)
 			nonce := cryptutil.NewBase64Key() // mock csrf
-
 			// (nonce|timestamp|redirect_url|encrypt(redirect_url),mac(nonce,ts))
 			b := []byte(fmt.Sprintf("%s|%d|%s", nonce, tt.ts, tt.extraMac))
 
@@ -481,55 +482,93 @@ func TestAuthenticate_Refresh(t *testing.T) {
 	tests := []struct {
 		name string
 
-		session  sessions.SessionStore
-		ctxError error
+		session *sessions.State
+		at      *oauth2.Token
 
 		provider      identity.Authenticator
 		secretEncoder encoding.MarshalUnmarshaler
-		sharedEncoder encoding.MarshalUnmarshaler
 
 		wantStatus int
 	}{
-		{"good", &mstore.Store{Session: &sessions.State{Email: "user@test.example", Expiry: jwt.NewNumericDate(time.Now().Add(10 * time.Minute))}}, nil, identity.MockProvider{RefreshResponse: oauth2.Token{Expiry: time.Now().Add(10 * time.Minute)}}, mock.Encoder{MarshalResponse: []byte("ok")}, mock.Encoder{MarshalResponse: []byte("ok")}, http.StatusOK},
-		{"bad session", &mstore.Store{}, errors.New("err"), identity.MockProvider{RefreshResponse: oauth2.Token{Expiry: time.Now().Add(10 * time.Minute)}}, mock.Encoder{MarshalResponse: []byte("ok")}, mock.Encoder{MarshalResponse: []byte("ok")}, http.StatusBadRequest},
-		{"encoder error", &mstore.Store{Session: &sessions.State{Email: "user@test.example", Expiry: jwt.NewNumericDate(time.Now().Add(10 * time.Minute))}}, nil, identity.MockProvider{RefreshResponse: oauth2.Token{Expiry: time.Now().Add(10 * time.Minute)}}, mock.Encoder{MarshalResponse: []byte("ok")}, mock.Encoder{MarshalError: errors.New("err")}, http.StatusInternalServerError},
+		{"good",
+			&sessions.State{Email: "user@test.example", Expiry: jwt.NewNumericDate(time.Now().Add(10 * time.Minute))},
+			&oauth2.Token{AccessToken: "mock", Expiry: time.Now().Add(10 * time.Minute)},
+			identity.MockProvider{RefreshResponse: oauth2.Token{Expiry: time.Now().Add(10 * time.Minute)}},
+			mock.Encoder{MarshalResponse: []byte("ok")},
+			200},
+		{"expired",
+			&sessions.State{Email: "user@test.example", Expiry: jwt.NewNumericDate(time.Now().Add(-10 * time.Minute))},
+			&oauth2.Token{AccessToken: "mock", Expiry: time.Now().Add(-10 * time.Minute)},
+			identity.MockProvider{RefreshResponse: oauth2.Token{Expiry: time.Now().Add(10 * time.Minute)}},
+			mock.Encoder{MarshalResponse: []byte("ok")},
+			200},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			defer ctrl.Finish()
 			mc := mock_cache.NewMockCacher(ctrl)
-			mc.EXPECT().Get(gomock.Any(), gomock.Any()).Return([]byte("hi"), nil).AnyTimes()
-			mc.EXPECT().Set(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
-
-			aead, err := chacha20poly1305.NewX(cryptutil.NewKey())
+			// just enough is stubbed out here so we can use our own mock provider
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(200)
+				w.Header().Set("Content-Type", "application/json")
+				out := fmt.Sprintf(`{"issuer":"http://%s"}`, r.Host)
+				fmt.Fprintln(w, out)
+			}))
+			defer ts.Close()
+			rURL := ts.URL
+			a, err := New(config.Options{
+				SharedKey:                cryptutil.NewBase64Key(),
+				CookieSecret:             cryptutil.NewBase64Key(),
+				AuthenticateURL:          uriParseHelper("https://authenticate.corp.beyondperimeter.com"),
+				Provider:                 "oidc",
+				ClientID:                 "mock",
+				ClientSecret:             "mock",
+				ProviderURL:              rURL,
+				AuthenticateCallbackPath: "mock",
+				CookieName:               "pomerium",
+				Addr:                     ":0",
+				CacheURL:                 uriParseHelper("https://authenticate.corp.beyondperimeter.com"),
+			})
 			if err != nil {
 				t.Fatal(err)
 			}
-			a := Authenticate{
-				sharedKey:        cryptutil.NewBase64Key(),
-				cookieSecret:     cryptutil.NewKey(),
-				RedirectURL:      uriParseHelper("https://authenticate.corp.beyondperimeter.com"),
-				encryptedEncoder: tt.secretEncoder,
-				sharedEncoder:    tt.sharedEncoder,
-				sessionStore:     tt.session,
-				provider:         tt.provider,
-				cookieCipher:     aead,
-				cacheClient:      mc,
-			}
-			r := httptest.NewRequest("GET", "/", nil)
-			state, _ := tt.session.LoadSession(r)
-			ctx := r.Context()
-			ctx = sessions.NewContext(ctx, state, tt.ctxError)
-			r = r.WithContext(ctx)
+			a.cacheClient = mc
+			a.provider = tt.provider
 
+			u, _ := url.Parse("/oauthGet")
+			params, _ := url.ParseQuery(u.RawQuery)
+			destination := urlutil.NewSignedURL(a.sharedKey,
+				&url.URL{
+					Scheme: "https",
+					Host:   "example.com",
+					Path:   "/.pomerium/refresh"})
+
+			u.RawQuery = params.Encode()
+
+			r := httptest.NewRequest(http.MethodGet, destination.String(), nil)
+
+			jwt, err := a.sharedEncoder.Marshal(tt.session)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rawToken, err := a.encryptedEncoder.Marshal(tt.session)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mc.EXPECT().Get(gomock.Any(), gomock.Any()).Return(rawToken, nil).AnyTimes()
+			mc.EXPECT().Set(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+			a.cacheClient = mc
+
+			r.Header.Set("Authorization", fmt.Sprintf("Pomerium %s", jwt))
 			r.Header.Set("Accept", "application/json")
 
 			w := httptest.NewRecorder()
-			httputil.HandlerFunc(a.Refresh).ServeHTTP(w, r)
+			router := mux.NewRouter()
+			a.Mount(router)
+			router.ServeHTTP(w, r)
 			if status := w.Code; status != tt.wantStatus {
-				t.Errorf("VerifySession() error = %v, wantErr %v\n%v", w.Result().StatusCode, tt.wantStatus, w.Body.String())
-
+				t.Errorf("Refresh() error = %v, wantErr %v\n%v", w.Result().StatusCode, tt.wantStatus, w.Body.String())
 			}
 		})
 	}

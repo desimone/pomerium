@@ -279,7 +279,8 @@ func (a *Authenticate) SignOut(w http.ResponseWriter, r *http.Request) error {
 // https://tools.ietf.org/html/rfc6749#section-4.2.1
 // https://developer.mozilla.org/en-US/docs/Web/API/XMLHttpRequest
 func (a *Authenticate) reauthenticateOrFail(w http.ResponseWriter, r *http.Request, err error) error {
-	// If request AJAX/XHR request, return a 401 instead .
+	// If request AJAX/XHR request, return a 401 instead because the redirect
+	// will almost certainly violate their CORs policy
 	if reqType := r.Header.Get("X-Requested-With"); strings.EqualFold(reqType, "XmlHttpRequest") {
 		return httputil.NewError(http.StatusUnauthorized, err)
 	}
@@ -470,15 +471,12 @@ func (a *Authenticate) Refresh(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// iterate like it's a link list trying to find the first oauth2 token that
-// is not expired, otherwise error
-// this is nice because the fist
+// getAccessToken gets an associated oauth2 access token from a session state
 func (a *Authenticate) getAccessToken(ctx context.Context, s *sessions.State) (*oauth2.Token, error) {
 	ctx, span := trace.StartSpan(ctx, "authenticate.getAccessToken")
 	defer span.End()
 
 	var accessToken oauth2.Token
-	key := s.AccessTokenHash
 	tokenBytes, err := a.cacheClient.Get(ctx, s.AccessTokenHash)
 	if err != nil {
 		return nil, err
@@ -487,22 +485,16 @@ func (a *Authenticate) getAccessToken(ctx context.Context, s *sessions.State) (*
 		return nil, err
 	}
 	if accessToken.Valid() {
-		// this token is still valid, use it!
-		return &accessToken, nil
+		return &accessToken, nil // this token is still valid, use it!
 	}
-	log.Info().Str("key", key).Bool("accessToken.Valid", accessToken.Valid()).Msg("getAccessToken: acesss token no longer valid")
-
-	key = a.timestampedHash(accessToken.RefreshToken)
-	tokenBytes, err = a.cacheClient.Get(ctx, key)
+	tokenBytes, err = a.cacheClient.Get(ctx, a.timestampedHash(accessToken.RefreshToken))
 	if err == nil {
-		log.Info().Str("key", key).Bool("accessToken.Valid", accessToken.Valid()).Msg("getAccessToken: associated refresh token")
 		// we found another possibly newer access token associated with the
 		// existing refresh token so let's try that.
 		if err := a.encryptedEncoder.Unmarshal(tokenBytes, &accessToken); err != nil {
 			return nil, err
 		}
 	}
-	log.Info().Str("key", key).Bool("accessToken.Valid", accessToken.Valid()).Msg("getAccessToken: looks like we are the first to hit not expired")
 
 	return &accessToken, nil
 }
