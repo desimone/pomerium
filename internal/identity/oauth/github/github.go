@@ -114,8 +114,12 @@ func (p *Provider) updateSessionState(ctx context.Context, t *oauth2.Token, v in
 }
 
 // Refresh renews a user's session by making a new userInfo request.
-func (p *Provider) Refresh(ctx context.Context, t *oauth2.Token, v interface{}) error {
-	return p.updateSessionState(ctx, t, v)
+func (p *Provider) Refresh(ctx context.Context, t *oauth2.Token, v interface{}) (*oauth2.Token, error) {
+	err := p.updateSessionState(ctx, t, v)
+	if err != nil {
+		return nil, err
+	}
+	return t, nil
 }
 
 // userTeams returns a slice of teams the user belongs by making a request

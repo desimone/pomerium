@@ -34,7 +34,7 @@ var (
 // Authenticator is an interface representing the ability to authenticate with an identity provider.
 type Authenticator interface {
 	Authenticate(context.Context, string, interface{}) (*oauth2.Token, error)
-	Refresh(context.Context, *oauth2.Token, interface{}) error
+	Refresh(context.Context, *oauth2.Token, interface{}) (*oauth2.Token, error)
 	Revoke(context.Context, *oauth2.Token) error
 	GetSignInURL(state string) string
 	LogOut() (*url.URL, error)

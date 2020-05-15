@@ -25,8 +25,8 @@ func (mp MockProvider) Authenticate(context.Context, string, interface{}) (*oaut
 }
 
 // Refresh is a mocked providers function.
-func (mp MockProvider) Refresh(context.Context, *oauth2.Token, interface{}) error {
-	return mp.RefreshError
+func (mp MockProvider) Refresh(context.Context, *oauth2.Token, interface{}) (*oauth2.Token, error) {
+	return &mp.RefreshResponse, mp.RefreshError
 }
 
 // Revoke is a mocked providers function.

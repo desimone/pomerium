@@ -16,7 +16,6 @@ import (
 
 	"github.com/pomerium/pomerium/internal/httputil"
 	"github.com/pomerium/pomerium/internal/identity/oauth"
-	"github.com/pomerium/pomerium/internal/log"
 	"github.com/pomerium/pomerium/internal/urlutil"
 	"github.com/pomerium/pomerium/internal/version"
 )
@@ -114,9 +113,8 @@ func (p *Provider) Authenticate(ctx context.Context, code string, v interface{})
 		return nil, fmt.Errorf("identity/oidc: couldn't unmarshal extra claims %w", err)
 	}
 
-	err = p.updateUserInfo(ctx, oauth2Token, v)
-	if err != nil {
-		return nil, err
+	if err := p.updateUserInfo(ctx, oauth2Token, v); err != nil {
+		return nil, fmt.Errorf("identity/oidc: couldn't update user info %w", err)
 	}
 
 	return oauth2Token, nil
@@ -138,7 +136,6 @@ func (p *Provider) updateUserInfo(ctx context.Context, t *oauth2.Token, v interf
 		if err := p.UserGroupFn(ctx, t, v); err != nil {
 			return fmt.Errorf("identity/oidc: could not retrieve groups: %w", err)
 		}
-		log.Info().Interface("v", v).Msg("updateUserInfo ")
 	}
 	return nil
 }
@@ -146,17 +143,17 @@ func (p *Provider) updateUserInfo(ctx context.Context, t *oauth2.Token, v interf
 // Refresh renews a user's session using an oidc refresh token without reprompting the user.
 // Group membership is also refreshed.
 // https://openid.net/specs/openid-connect-core-1_0.html#RefreshTokens
-func (p *Provider) Refresh(ctx context.Context, t *oauth2.Token, v interface{}) error {
+func (p *Provider) Refresh(ctx context.Context, t *oauth2.Token, v interface{}) (*oauth2.Token, error) {
 	if t == nil {
-		return ErrMissingAccessToken
+		return nil, ErrMissingAccessToken
 	}
 	if t.RefreshToken == "" {
-		return ErrMissingRefreshToken
+		return nil, ErrMissingRefreshToken
 	}
 	var err error
-	t, err = p.Oauth.TokenSource(ctx, t).Token()
+	newToken, err := p.Oauth.TokenSource(ctx, t).Token()
 	if err != nil {
-		return fmt.Errorf("identity/oidc: refresh failed: %w", err)
+		return nil, fmt.Errorf("identity/oidc: refresh failed: %w", err)
 	}
 
 	// Many identity providers _will not_ return `id_token` on refresh
@@ -164,10 +161,13 @@ func (p *Provider) Refresh(ctx context.Context, t *oauth2.Token, v interface{}) 
 	idToken, err := p.getIDToken(ctx, t)
 	if err == nil {
 		if err := idToken.Claims(v); err != nil {
-			return fmt.Errorf("identity/oidc: couldn't unmarshal extra claims %w", err)
+			return nil, fmt.Errorf("identity/oidc: couldn't unmarshal extra claims %w", err)
 		}
 	}
-	return p.updateUserInfo(ctx, t, v)
+	if err := p.updateUserInfo(ctx, newToken, v); err != nil {
+		return nil, fmt.Errorf("identity/oidc: couldn't update user info %w", err)
+	}
+	return newToken, nil
 }
 
 // getIDToken returns the raw jwt payload for `id_token` from the oauth2 token

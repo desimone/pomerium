@@ -21,7 +21,6 @@ import (
 	"github.com/pomerium/pomerium/internal/sessions"
 	"github.com/pomerium/pomerium/internal/telemetry/trace"
 	"github.com/pomerium/pomerium/internal/urlutil"
-	"gopkg.in/square/go-jose.v2/jwt"
 
 	"github.com/gorilla/mux"
 	"github.com/rs/cors"
@@ -109,12 +108,12 @@ func (a *Authenticate) refresh(w http.ResponseWriter, r *http.Request, s *sessio
 	if err != nil {
 		return nil, err
 	}
-	err = a.provider.Refresh(ctx, accessToken, s)
+	newAccessToken, err := a.provider.Refresh(ctx, accessToken, s)
 	if err != nil {
 		return nil, fmt.Errorf("authenticate: refresh failed: %w", err)
 	}
 
-	newSession := s.NewSession(a.RedirectURL.Hostname(), s.Audience, accessToken)
+	newSession := s.NewSession(a.RedirectURL.Hostname(), s.Audience, newAccessToken)
 
 	encSession, err := a.sharedEncoder.Marshal(newSession)
 	if err != nil {
@@ -125,7 +124,7 @@ func (a *Authenticate) refresh(w http.ResponseWriter, r *http.Request, s *sessio
 		return nil, fmt.Errorf("authenticate: error saving new session: %w", err)
 	}
 
-	if err := a.setAccessToken(ctx, accessToken); err != nil {
+	if err := a.setAccessToken(ctx, newAccessToken); err != nil {
 		return nil, fmt.Errorf("authenticate: error saving refreshed access token: %w", err)
 	}
 	// return the new session and add it to the current request context
@@ -380,7 +379,6 @@ func (a *Authenticate) getOAuthCallback(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		return nil, httputil.NewError(http.StatusBadRequest, err)
 	}
-	s.Expiry = jwt.NewNumericDate(time.Now().Add(5 * time.Second))
 
 	// Ok -- We've got a valid session here. Let's now persist the access
 	// token to cache, and the user identity token to local storage.
@@ -410,11 +408,12 @@ func (a *Authenticate) RefreshAPI(w http.ResponseWriter, r *http.Request) error 
 		return err
 	}
 
-	if err := a.provider.Refresh(ctx, accessToken, s); err != nil {
+	newAccessToken, err := a.provider.Refresh(ctx, accessToken, s)
+	if err != nil {
 		return err
 	}
 
-	routeNewssion := s.NewSession(a.RedirectURL.Hostname(), s.Audience, accessToken)
+	routeNewssion := s.NewSession(a.RedirectURL.Hostname(), s.Audience, newAccessToken)
 
 	encSession, err := a.encryptedEncoder.Marshal(&routeNewssion)
 	if err != nil {
