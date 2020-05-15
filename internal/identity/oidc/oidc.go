@@ -158,7 +158,7 @@ func (p *Provider) Refresh(ctx context.Context, t *oauth2.Token, v interface{}) 
 
 	// Many identity providers _will not_ return `id_token` on refresh
 	// https://github.com/FusionAuth/fusionauth-issues/issues/110#issuecomment-481526544
-	idToken, err := p.getIDToken(ctx, t)
+	idToken, err := p.getIDToken(ctx, newToken)
 	if err == nil {
 		if err := idToken.Claims(v); err != nil {
 			return nil, fmt.Errorf("identity/oidc: couldn't unmarshal extra claims %w", err)
