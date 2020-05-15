@@ -13,6 +13,7 @@ import (
 
 	"github.com/pomerium/csrf"
 	"github.com/pomerium/pomerium/internal/cryptutil"
+	"github.com/pomerium/pomerium/internal/hashutil"
 	"github.com/pomerium/pomerium/internal/httputil"
 	"github.com/pomerium/pomerium/internal/identity/oidc"
 	"github.com/pomerium/pomerium/internal/log"
@@ -23,6 +24,7 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/rs/cors"
+	"golang.org/x/oauth2"
 )
 
 // Handler returns the authenticate service's handler chain.
@@ -80,19 +82,15 @@ func (a *Authenticate) Mount(r *mux.Router) {
 // session state is attached to the users's request context.
 func (a *Authenticate) VerifySession(next http.Handler) http.Handler {
 	return httputil.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
-		ctx := r.Context()
-		jwt, err := sessions.FromContext(ctx)
+		ctx, span := trace.StartSpan(r.Context(), "authenticate.VerifySession")
+		defer span.End()
+		s, err := a.getSessionFromCtx(ctx)
 		if err != nil {
 			log.FromRequest(r).Info().Err(err).Msg("authenticate: session load error")
 			return a.reauthenticateOrFail(w, r, err)
 		}
-		var s sessions.State
-		if err := a.encryptedEncoder.Unmarshal([]byte(jwt), &s); err != nil {
-			return httputil.NewError(http.StatusBadRequest, err)
-		}
-
 		if s.IsExpired() {
-			ctx, err = a.refresh(w, r, &s)
+			ctx, err = a.refresh(w, r, s)
 			if err != nil {
 				log.FromRequest(r).Info().Err(err).Msg("authenticate: verify session, refresh")
 				return a.reauthenticateOrFail(w, r, err)
@@ -106,17 +104,28 @@ func (a *Authenticate) VerifySession(next http.Handler) http.Handler {
 func (a *Authenticate) refresh(w http.ResponseWriter, r *http.Request, s *sessions.State) (context.Context, error) {
 	ctx, span := trace.StartSpan(r.Context(), "authenticate.VerifySession/refresh")
 	defer span.End()
-	newSession, err := a.provider.Refresh(ctx, s)
+	accessToken, err := a.getAccessToken(ctx, s)
+	if err != nil {
+		return nil, err
+	}
+	err = a.provider.Refresh(ctx, accessToken, s)
 	if err != nil {
 		return nil, fmt.Errorf("authenticate: refresh failed: %w", err)
 	}
+
+	newSession := s.NewSession(a.RedirectURL.Hostname(), s.Audience, accessToken)
+
+	encSession, err := a.sharedEncoder.Marshal(newSession)
+	if err != nil {
+		return nil, err
+	}
+
 	if err := a.sessionStore.SaveSession(w, r, newSession); err != nil {
 		return nil, fmt.Errorf("authenticate: refresh save failed: %w", err)
 	}
-	newSession = newSession.NewSession(s.Issuer, s.Audience)
-	encSession, err := a.encryptedEncoder.Marshal(newSession)
-	if err != nil {
-		return nil, err
+
+	if err := a.setAccessToken(ctx, accessToken); err != nil {
+		return nil, fmt.Errorf("authenticate: refresh save failed: %w", err)
 	}
 	// return the new session and add it to the current request context
 	return sessions.NewContext(ctx, string(encSession), err), nil
@@ -131,6 +140,9 @@ func (a *Authenticate) RobotsTxt(w http.ResponseWriter, r *http.Request) {
 
 // SignIn handles to authenticating a user.
 func (a *Authenticate) SignIn(w http.ResponseWriter, r *http.Request) error {
+	ctx, span := trace.StartSpan(r.Context(), "authenticate.SignOut")
+	defer span.End()
+
 	redirectURL, err := urlutil.ParseAndValidateURL(r.FormValue(urlutil.QueryRedirectURI))
 	if err != nil {
 		return httputil.NewError(http.StatusBadRequest, err)
@@ -158,13 +170,9 @@ func (a *Authenticate) SignIn(w http.ResponseWriter, r *http.Request) error {
 		jwtAudience = append(jwtAudience, fwdAuth)
 	}
 
-	jwt, err := sessions.FromContext(r.Context())
+	s, err := a.getSessionFromCtx(ctx)
 	if err != nil {
-		return httputil.NewError(http.StatusBadRequest, err)
-	}
-	var s sessions.State
-	if err := a.encryptedEncoder.Unmarshal([]byte(jwt), &s); err != nil {
-		return httputil.NewError(http.StatusBadRequest, err)
+		return err
 	}
 
 	// user impersonation
@@ -173,11 +181,11 @@ func (a *Authenticate) SignIn(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	// re-persist the session, useful when session was evicted from session
-	if err := a.sessionStore.SaveSession(w, r, &s); err != nil {
+	if err := a.sessionStore.SaveSession(w, r, s); err != nil {
 		return httputil.NewError(http.StatusBadRequest, err)
 	}
 
-	newSession := s.NewSession(a.RedirectURL.Host, jwtAudience)
+	newSession := s.NewSession(a.RedirectURL.Host, jwtAudience, nil)
 
 	callbackParams := callbackURL.Query()
 
@@ -192,7 +200,7 @@ func (a *Authenticate) SignIn(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	// sign the route session, as a JWT
-	signedJWT, err := a.sharedEncoder.Marshal(newSession.RouteSession())
+	signedJWT, err := a.sharedEncoder.Marshal(newSession)
 	if err != nil {
 		return httputil.NewError(http.StatusBadRequest, err)
 	}
@@ -217,22 +225,26 @@ func (a *Authenticate) SignIn(w http.ResponseWriter, r *http.Request) error {
 // SignOut signs the user out and attempts to revoke the user's identity session
 // Handles both GET and POST.
 func (a *Authenticate) SignOut(w http.ResponseWriter, r *http.Request) error {
+	ctx, span := trace.StartSpan(r.Context(), "authenticate.SignOut")
+	defer span.End()
+
 	// no matter what happens, we want to clear the local session store
 	a.sessionStore.ClearSession(w, r)
 
-	jwt, err := sessions.FromContext(r.Context())
+	s, err := a.getSessionFromCtx(ctx)
 	if err != nil {
-		return httputil.NewError(http.StatusBadRequest, err)
-	}
-	var s sessions.State
-	if err := a.encryptedEncoder.Unmarshal([]byte(jwt), &s); err != nil {
-		return httputil.NewError(http.StatusBadRequest, err)
+		return err
 	}
 
 	redirectString := r.FormValue(urlutil.QueryRedirectURI)
 
+	accessToken, err := a.getAccessToken(ctx, s)
+	if err != nil {
+		return err
+	}
+
 	// first, try to revoke the session if implemented
-	err = a.provider.Revoke(r.Context(), s.AccessToken)
+	err = a.provider.Revoke(ctx, accessToken)
 	if err != nil && !errors.Is(err, oidc.ErrRevokeNotImplemented) {
 		return httputil.NewError(http.StatusBadRequest, err)
 	}
@@ -306,6 +318,9 @@ func (a *Authenticate) statusForErrorCode(errorCode string) int {
 }
 
 func (a *Authenticate) getOAuthCallback(w http.ResponseWriter, r *http.Request) (*url.URL, error) {
+	ctx, span := trace.StartSpan(r.Context(), "authenticate.getOAuthCallback")
+	defer span.End()
+
 	// Error Authentication Response: rfc6749#section-4.1.2.1 & OIDC#3.1.2.6
 	//
 	// first, check if the identity provider returned an error
@@ -321,14 +336,21 @@ func (a *Authenticate) getOAuthCallback(w http.ResponseWriter, r *http.Request) 
 	// Successful Authentication Response: rfc6749#section-4.1.2 & OIDC#3.1.2.5
 	//
 	// Exchange the supplied Authorization Code for a valid user session.
-	session, err := a.provider.Authenticate(r.Context(), code)
+	var s sessions.State
+	accessToken, err := a.provider.Authenticate(ctx, code, &s)
 	if err != nil {
 		return nil, fmt.Errorf("error redeeming authenticate code: %w", err)
 	}
+	s = s.NewSession(
+		a.RedirectURL.Hostname(),
+		[]string{a.RedirectURL.Hostname()},
+		accessToken,
+	)
+
 	// state includes a csrf nonce (validated by middleware) and redirect uri
 	bytes, err := base64.URLEncoding.DecodeString(r.FormValue("state"))
 	if err != nil {
-		return nil, httputil.NewError(http.StatusBadRequest, err)
+		return nil, httputil.NewError(http.StatusBadRequest, fmt.Errorf("bad bytes: %w", err))
 	}
 
 	// split state into concat'd components
@@ -357,8 +379,12 @@ func (a *Authenticate) getOAuthCallback(w http.ResponseWriter, r *http.Request) 
 		return nil, httputil.NewError(http.StatusBadRequest, err)
 	}
 
-	// OK. Looks good so let's persist our user session
-	if err := a.sessionStore.SaveSession(w, r, session); err != nil {
+	// Ok -- We've got a valid session here. Let's now persist the access
+	// token to cache, and the user identity token to local storage.
+	if err := a.setAccessToken(ctx, accessToken); err != nil {
+		return nil, fmt.Errorf("failed saving access token: %w", err)
+	}
+	if err := a.sessionStore.SaveSession(w, r, &s); err != nil {
 		return nil, fmt.Errorf("failed saving new session: %w", err)
 	}
 	return redirectURL, nil
@@ -368,26 +394,31 @@ func (a *Authenticate) getOAuthCallback(w http.ResponseWriter, r *http.Request) 
 // tokens and state with the identity provider. If successful, a new signed JWT
 // and refresh token (`refresh_token`) are returned as JSON
 func (a *Authenticate) RefreshAPI(w http.ResponseWriter, r *http.Request) error {
-	jwt, err := sessions.FromContext(r.Context())
-	if err != nil {
-		return httputil.NewError(http.StatusBadRequest, err)
-	}
-	var s sessions.State
-	if err := a.encryptedEncoder.Unmarshal([]byte(jwt), &s); err != nil {
-		return httputil.NewError(http.StatusBadRequest, err)
-	}
-	newSession, err := a.provider.Refresh(r.Context(), &s)
-	if err != nil {
-		return err
-	}
-	newSession = newSession.NewSession(s.Issuer, s.Audience)
+	ctx, span := trace.StartSpan(r.Context(), "authenticate.RefreshAPI")
+	defer span.End()
 
-	encSession, err := a.encryptedEncoder.Marshal(newSession)
+	s, err := a.getSessionFromCtx(ctx)
 	if err != nil {
 		return err
 	}
 
-	signedJWT, err := a.sharedEncoder.Marshal(newSession.RouteSession())
+	accessToken, err := a.getAccessToken(ctx, s)
+	if err != nil {
+		return err
+	}
+
+	if err := a.provider.Refresh(ctx, accessToken, s); err != nil {
+		return err
+	}
+
+	routeNewssion := s.NewSession(a.RedirectURL.Hostname(), s.Audience, accessToken)
+
+	encSession, err := a.encryptedEncoder.Marshal(&routeNewssion)
+	if err != nil {
+		return err
+	}
+
+	signedJWT, err := a.sharedEncoder.Marshal(routeNewssion)
 	if err != nil {
 		return err
 	}
@@ -413,20 +444,23 @@ func (a *Authenticate) RefreshAPI(w http.ResponseWriter, r *http.Request) error 
 // middleware. This handler is responsible for creating a new route scoped
 // session and returning it.
 func (a *Authenticate) Refresh(w http.ResponseWriter, r *http.Request) error {
-	jwt, err := sessions.FromContext(r.Context())
+	ctx, span := trace.StartSpan(r.Context(), "authenticate.Refresh")
+	defer span.End()
+
+	s, err := a.getSessionFromCtx(ctx)
 	if err != nil {
-		return httputil.NewError(http.StatusBadRequest, err)
+		return err
 	}
-	var s sessions.State
-	if err := a.encryptedEncoder.Unmarshal([]byte(jwt), &s); err != nil {
-		return httputil.NewError(http.StatusBadRequest, err)
+
+	accessToken, err := a.getAccessToken(ctx, s)
+	if err != nil {
+		return err
 	}
 
 	aud := strings.Split(r.FormValue(urlutil.QueryAudience), ",")
-	routeSession := s.NewSession(r.Host, aud)
-	routeSession.AccessTokenID = s.AccessTokenID
+	routeSession := s.NewSession(r.Host, aud, accessToken)
 
-	signedJWT, err := a.sharedEncoder.Marshal(routeSession.RouteSession())
+	signedJWT, err := a.sharedEncoder.Marshal(routeSession)
 	if err != nil {
 		return err
 	}
@@ -434,4 +468,77 @@ func (a *Authenticate) Refresh(w http.ResponseWriter, r *http.Request) error {
 	w.Header().Set("Content-Type", "application/jwt") // RFC 7519 : 10.3.1
 	w.Write(signedJWT)
 	return nil
+}
+
+// iterate like it's a link list trying to find the first oauth2 token that
+// is not expired, otherwise error
+// this is nice because the fist
+func (a *Authenticate) getAccessToken(ctx context.Context, s *sessions.State) (*oauth2.Token, error) {
+	ctx, span := trace.StartSpan(ctx, "authenticate.getAccessToken")
+	defer span.End()
+
+	var accessToken oauth2.Token
+	key := s.AccessTokenHash
+	tokenBytes, err := a.cacheClient.Get(ctx, s.AccessTokenHash)
+	if err != nil {
+		return nil, err
+	}
+	if err := a.encryptedEncoder.Unmarshal(tokenBytes, &accessToken); err != nil {
+		return nil, err
+	}
+	if accessToken.Valid() {
+		// this token is still valid, use it!
+		return &accessToken, nil
+	}
+	log.Info().Str("key", key).Bool("accessToken.Valid", accessToken.Valid()).Msg("getAccessToken: acesss token no longer valid")
+
+	key = a.timestampedHash(accessToken.RefreshToken)
+	tokenBytes, err = a.cacheClient.Get(ctx, key)
+	if err == nil {
+		log.Info().Str("key", key).Bool("accessToken.Valid", accessToken.Valid()).Msg("getAccessToken: associated refresh token")
+		// we found another possibly newer access token associated with the
+		// existing refresh token so let's try that.
+		if err := a.encryptedEncoder.Unmarshal(tokenBytes, &accessToken); err != nil {
+			return nil, err
+		}
+	}
+	log.Info().Str("key", key).Bool("accessToken.Valid", accessToken.Valid()).Msg("getAccessToken: looks like we are the first to hit not expired")
+
+	return &accessToken, nil
+}
+
+func (a *Authenticate) setAccessToken(ctx context.Context, accessToken *oauth2.Token) error {
+	encToken, err := a.encryptedEncoder.Marshal(accessToken)
+	if err != nil {
+		return err
+	}
+	// set this specific access token
+	key := fmt.Sprintf("%x", hashutil.Hash(accessToken.AccessToken))
+	if err := a.cacheClient.Set(ctx, key, encToken); err != nil {
+		return fmt.Errorf("authenticate: setAccessToken failed key: %s :%w", key, err)
+	}
+
+	// set this as the "latest" token for this access token
+	key = a.timestampedHash(accessToken.RefreshToken)
+	if err := a.cacheClient.Set(ctx, key, encToken); err != nil {
+		return fmt.Errorf("authenticate: setAccessToken failed key: %s :%w", key, err)
+	}
+
+	return nil
+}
+
+func (a *Authenticate) timestampedHash(s string) string {
+	return fmt.Sprintf("%x-%v", hashutil.Hash(s), time.Now().Truncate(time.Minute).Unix())
+}
+
+func (a *Authenticate) getSessionFromCtx(ctx context.Context) (*sessions.State, error) {
+	jwt, err := sessions.FromContext(ctx)
+	if err != nil {
+		return nil, httputil.NewError(http.StatusBadRequest, err)
+	}
+	var s sessions.State
+	if err := a.sharedEncoder.Unmarshal([]byte(jwt), &s); err != nil {
+		return nil, httputil.NewError(http.StatusBadRequest, err)
+	}
+	return &s, nil
 }

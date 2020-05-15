@@ -219,7 +219,7 @@ func (a *Authorize) refreshSession(ctx context.Context, rawSession []byte) (newS
 	// 1 - build a signed url to call refresh on authenticate service
 	refreshURI := options.AuthenticateURL.ResolveReference(&url.URL{Path: "/.pomerium/refresh"})
 	q := refreshURI.Query()
-	q.Set(urlutil.QueryAccessTokenID, state.AccessTokenID)          // hash value points to parent token
+	q.Set(urlutil.QueryAccessTokenID, state.AccessTokenHash)        // hash value points to parent token
 	q.Set(urlutil.QueryAudience, strings.Join(state.Audience, ",")) // request's audience, this route
 	refreshURI.RawQuery = q.Encode()
 	signedRefreshURL := urlutil.NewSignedURL(options.SharedKey, refreshURI).String()
