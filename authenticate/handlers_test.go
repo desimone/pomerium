@@ -136,6 +136,11 @@ func TestAuthenticate_SignIn(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+			mc := mock_cache.NewMockCacher(ctrl)
+			mc.EXPECT().Get(gomock.Any(), gomock.Any()).Return([]byte("hi"), nil).AnyTimes()
+
 			a := &Authenticate{
 				sessionStore:     tt.session,
 				provider:         tt.provider,
@@ -148,6 +153,7 @@ func TestAuthenticate_SignIn(t *testing.T) {
 					Name:   "cookie",
 					Domain: "foo",
 				},
+				cacheClient: mc,
 			}
 			uri := &url.URL{Scheme: tt.scheme, Host: tt.host}
 

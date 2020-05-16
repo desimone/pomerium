@@ -51,16 +51,15 @@ type State struct {
 
 // NewSession updates issuer, audience, and issuance timestamps but keeps
 // parent expiry.
-func (s State) NewSession(issuer string, audience []string, accessToken *oauth2.Token) State {
-	s.IssuedAt = jwt.NewNumericDate(timeNow())
-	s.NotBefore = s.IssuedAt
-	s.Audience = audience
-	s.Issuer = issuer
-	if accessToken != nil {
-		s.AccessTokenHash = fmt.Sprintf("%x", hashutil.Hash(accessToken.AccessToken))
-		s.Expiry = jwt.NewNumericDate(accessToken.Expiry)
-	}
-	return s
+func NewSession(s *State, issuer string, audience []string, accessToken *oauth2.Token) State {
+	newState := *s
+	newState.IssuedAt = jwt.NewNumericDate(timeNow())
+	newState.NotBefore = newState.IssuedAt
+	newState.Audience = audience
+	newState.Issuer = issuer
+	newState.AccessTokenHash = fmt.Sprintf("%x", hashutil.Hash(accessToken))
+	newState.Expiry = jwt.NewNumericDate(accessToken.Expiry)
+	return newState
 }
 
 // IsExpired returns true if the users's session is expired.

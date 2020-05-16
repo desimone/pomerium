@@ -231,7 +231,6 @@ func (a *Authorize) refreshSession(ctx context.Context, rawSession []byte) (newS
 	req.Header.Set("Authorization", fmt.Sprintf("Pomerium %s", rawSession))
 	req.Header.Set("X-Requested-With", "XmlHttpRequest")
 	req.Header.Set("Accept", "application/json")
-	log.Info().Interface("headers", req.Header).Msg("oh")
 
 	res, err := httputil.DefaultClient.Do(req)
 	if err != nil {

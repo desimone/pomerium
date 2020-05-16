@@ -21,6 +21,7 @@ import (
 	"github.com/pomerium/pomerium/internal/sessions"
 	"github.com/pomerium/pomerium/internal/telemetry/trace"
 	"github.com/pomerium/pomerium/internal/urlutil"
+	"gopkg.in/square/go-jose.v2/jwt"
 
 	"github.com/gorilla/mux"
 	"github.com/rs/cors"
@@ -113,7 +114,7 @@ func (a *Authenticate) refresh(w http.ResponseWriter, r *http.Request, s *sessio
 		return nil, fmt.Errorf("authenticate: refresh failed: %w", err)
 	}
 
-	newSession := s.NewSession(a.RedirectURL.Hostname(), s.Audience, newAccessToken)
+	newSession := sessions.NewSession(s, a.RedirectURL.Hostname(), s.Audience, newAccessToken)
 
 	encSession, err := a.sharedEncoder.Marshal(newSession)
 	if err != nil {
@@ -174,18 +175,20 @@ func (a *Authenticate) SignIn(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-
+	accessToken, err := a.getAccessToken(ctx, s)
+	if err != nil {
+		return err
+	}
 	// user impersonation
 	if impersonate := r.FormValue(urlutil.QueryImpersonateAction); impersonate != "" {
 		s.SetImpersonation(r.FormValue(urlutil.QueryImpersonateEmail), r.FormValue(urlutil.QueryImpersonateGroups))
 	}
+	newSession := sessions.NewSession(s, a.RedirectURL.Host, jwtAudience, accessToken)
 
 	// re-persist the session, useful when session was evicted from session
 	if err := a.sessionStore.SaveSession(w, r, s); err != nil {
 		return httputil.NewError(http.StatusBadRequest, err)
 	}
-
-	newSession := s.NewSession(a.RedirectURL.Host, jwtAudience, nil)
 
 	callbackParams := callbackURL.Query()
 
@@ -342,11 +345,8 @@ func (a *Authenticate) getOAuthCallback(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		return nil, fmt.Errorf("error redeeming authenticate code: %w", err)
 	}
-	s = s.NewSession(
-		a.RedirectURL.Hostname(),
-		[]string{a.RedirectURL.Hostname()},
-		accessToken,
-	)
+
+	newState := sessions.NewSession(&s, a.RedirectURL.Hostname(), []string{a.RedirectURL.Hostname()}, accessToken)
 
 	// state includes a csrf nonce (validated by middleware) and redirect uri
 	bytes, err := base64.URLEncoding.DecodeString(r.FormValue("state"))
@@ -385,7 +385,7 @@ func (a *Authenticate) getOAuthCallback(w http.ResponseWriter, r *http.Request) 
 	if err := a.setAccessToken(ctx, accessToken); err != nil {
 		return nil, fmt.Errorf("failed saving access token: %w", err)
 	}
-	if err := a.sessionStore.SaveSession(w, r, &s); err != nil {
+	if err := a.sessionStore.SaveSession(w, r, &newState); err != nil {
 		return nil, fmt.Errorf("failed saving new session: %w", err)
 	}
 	return redirectURL, nil
@@ -413,7 +413,7 @@ func (a *Authenticate) RefreshAPI(w http.ResponseWriter, r *http.Request) error 
 		return err
 	}
 
-	routeNewssion := s.NewSession(a.RedirectURL.Hostname(), s.Audience, newAccessToken)
+	routeNewssion := sessions.NewSession(s, a.RedirectURL.Hostname(), s.Audience, newAccessToken)
 
 	encSession, err := a.encryptedEncoder.Marshal(&routeNewssion)
 	if err != nil {
@@ -460,15 +460,15 @@ func (a *Authenticate) Refresh(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	aud := strings.Split(r.FormValue(urlutil.QueryAudience), ",")
-	routeSession := s.NewSession(r.Host, aud, accessToken)
+	routeSession := sessions.NewSession(s, r.Host, aud, accessToken)
+	routeSession.Expiry = jwt.NewNumericDate(time.Now().Add(10 * time.Second))
 
-	signedJWT, err := a.sharedEncoder.Marshal(routeSession)
+	jwt, err := a.sharedEncoder.Marshal(routeSession)
 	if err != nil {
 		return err
 	}
-
 	w.Header().Set("Content-Type", "application/jwt") // RFC 7519 : 10.3.1
-	w.Write(signedJWT)
+	w.Write(jwt)
 	return nil
 }
 
@@ -506,7 +506,7 @@ func (a *Authenticate) setAccessToken(ctx context.Context, accessToken *oauth2.T
 		return err
 	}
 	// set this specific access token
-	key := fmt.Sprintf("%x", hashutil.Hash(accessToken.AccessToken))
+	key := fmt.Sprintf("%x", hashutil.Hash(accessToken))
 	if err := a.cacheClient.Set(ctx, key, encToken); err != nil {
 		return fmt.Errorf("authenticate: setAccessToken failed key: %s :%w", key, err)
 	}
