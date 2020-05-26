@@ -12,6 +12,7 @@ import (
 	"github.com/pomerium/pomerium/internal/version"
 )
 
+// ErrRedirectOnly is the error telling httputil to redirect instead of error.
 var ErrRedirectOnly = errors.New("httputil: redirecting to authenticate service")
 
 var errorTemplate = template.Must(frontend.NewTemplates())
